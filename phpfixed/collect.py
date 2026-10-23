@@ -137,18 +137,15 @@ def from_rpm(osr, runner=run):
             continue
         name, evr = parts
         evr = evr.replace("(none):", "")
-        if _PANEL.match(name):
-            pkg = _PANEL.match(name).group(1)
-            vendor, stream = _panel_vendor(pkg), osr[1] or "*"
-        elif _RPM_SCL.match(name):
-            pkg = _RPM_SCL.match(name).group(1)
+        if m := _PANEL.match(name):
+            vendor, stream = _panel_vendor(m.group(1)), osr[1] or "*"
+        elif m := _RPM_SCL.match(name):
             vendor, stream = "remi", osr[1] or "*"
-        elif _RPM_BASE.match(name):
-            pkg = _RPM_BASE.match(name).group(1)
+        elif m := _RPM_BASE.match(name):
             vendor, stream = ("remi", osr[1]) if ".remi" in evr else osr
         else:
             continue
-        builds.append(_build("rpm", vendor, stream, pkg, evr, "vercmp-rpm", name))
+        builds.append(_build("rpm", vendor, stream, m.group(1), evr, "vercmp-rpm", name))
     return builds, []
 
 
