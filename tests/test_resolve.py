@@ -1,38 +1,44 @@
+import json
 import unittest
+from unittest.mock import MagicMock, patch
 
-from phpfixed.collect import _branch
 from phpfixed.resolve import exit_code, load_records, resolve, resolve_one, validate_record
+from phpfixed.vercmp import branch
 
 CVE = "CVE-TEST-0001"
 
 # Fixture records only. Real records live in phpfixed/data/ and must be
 # verified against the vendor's own advisory.
 RECORDS = [
-    {"cve": CVE, "vendor": "ubuntu", "stream": "24.04", "package": "php8.3",
+    {"cve": CVE, "vendor": "ubuntu", "stream": "24.04", "package": "php8.3", "branch": "8.3",
      "match": "vercmp-deb", "fixed": "8.3.6-0ubuntu0.24.04.13", "status": "fixed",
      "evidence_url": "https://example.invalid/usn", "checked": "2026-10-21"},
-    {"cve": CVE, "vendor": "sury", "stream": "*", "package": "php8.5",
+    {"cve": CVE, "vendor": "sury", "stream": "*", "package": "php8.5", "branch": "8.5",
      "match": "vercmp-deb", "fixed": "8.5.12-1", "status": "fixed",
      "evidence_url": "https://example.invalid/sury", "checked": "2026-10-21"},
-    {"cve": CVE, "vendor": "cpanel", "stream": "*", "package": "ea-php74",
-     "match": "unresolvable", "fixed": None, "status": "fixed",
-     "note": "backported without a version change",
+    {"cve": CVE, "vendor": "cpanel", "stream": "*", "package": "ea-php74", "branch": "7.4",
+     "status": "unknown", "note": "backported without a version change",
      "evidence_url": "https://example.invalid/ea4", "checked": "2026-10-21"},
-    {"cve": CVE, "vendor": "amzn", "stream": "2023", "package": "php",
-     "match": "vercmp-rpm", "fixed": None, "status": "not-fixed",
+    {"cve": CVE, "vendor": "amzn", "stream": "2023", "package": "php", "branch": "8.4",
+     "status": "not-fixed",
      "evidence_url": "https://example.invalid/al", "checked": "2026-10-21"},
-    {"cve": CVE, "vendor": "docker-official", "stream": "8.5", "package": "php", "branch": "8.5",
+    {"cve": CVE, "vendor": "upstream", "stream": "*", "package": "php", "branch": "8.5",
      "match": "upstream", "fixed": "8.5.12", "status": "fixed",
-     "evidence_url": "https://example.invalid/docker", "checked": "2026-10-21"},
+     "evidence_url": "https://example.invalid/php", "checked": "2026-10-21"},
     {"cve": CVE, "vendor": "rhel", "stream": "9", "package": "php", "branch": "8.2",
      "match": "vercmp-rpm", "fixed": "8.2.35-1.module+el9.8.0+25111+a1450321", "status": "fixed",
      "evidence_url": "https://example.invalid/rhsa", "checked": "2026-10-21"},
 ]
+UPSTREAM_85 = RECORDS[4]
 
 
 def b(vendor, stream, package, version, scheme):
     return {"source": "test", "vendor": vendor, "stream": stream, "package": package,
-            "branch": _branch(version), "version": version, "scheme": scheme, "where": "test"}
+            "branch": branch(version), "version": version, "scheme": scheme, "where": "test"}
+
+
+def up(version):
+    return b("upstream", "*", "php", version, "upstream")
 
 
 class TestResolveOne(unittest.TestCase):
@@ -67,8 +73,25 @@ class TestResolveOne(unittest.TestCase):
         self.check(b("ubuntu", "24.04", "php8.3", "x:junk", "vercmp-deb"), "unknown")
 
     def test_upstream(self):
-        self.check(b("docker-official", "8.5", "php", "8.5.12", "upstream"), "fixed")
-        self.check(b("docker-official", "8.5", "php", "8.5.11", "upstream"), "not-fixed")
+        self.check(up("8.5.12"), "fixed")
+        self.check(up("8.5.11"), "not-fixed")
+
+    def test_upstream_prerelease_is_unknown(self):
+        # Audit: 8.5.12RC1 and friends used to sort as >= 8.5.12.
+        for v in ("8.5.12RC1", "8.5.12-dev", "8.5.12junk", "8.5.13RC1"):
+            with self.subTest(v=v):
+                self.check(up(v), "unknown")
+
+    def test_conflicting_records_are_unknown_in_any_order(self):
+        # Audit: the first matching record used to win.
+        later = {**UPSTREAM_85, "fixed": "8.5.13"}
+        for order in ([UPSTREAM_85, later], [later, UPSTREAM_85]):
+            with self.subTest(first=order[0]["fixed"]):
+                self.assertEqual(resolve_one(up("8.5.12"), CVE, order)["status"], "unknown")
+
+    def test_identical_duplicates_still_resolve(self):
+        self.assertEqual(resolve_one(up("8.5.12"), CVE, [UPSTREAM_85, dict(UPSTREAM_85)])["status"],
+                         "fixed")
 
     def test_other_branch_never_matches(self):
         # RHEL ships 8.1/8.2/8.3 module streams all named "php". An 8.3 build
@@ -86,10 +109,43 @@ class TestBundledData(unittest.TestCase):
             with self.subTest(vendor=r["vendor"], stream=r["stream"], package=r["package"], cve=r["cve"]):
                 self.assertEqual(validate_record(r), [])
 
-    def test_validator_rejects_branchless_generic_package(self):
-        bad = {"cve": CVE, "vendor": "rhel", "stream": "9", "package": "php", "match": "vercmp-rpm",
-               "fixed": "8.2.35-1", "status": "fixed", "evidence_url": "https://x", "checked": "2026-10-22"}
-        self.assertIn("package name doesn't pin the PHP branch; set 'branch'", validate_record(bad))
+    def test_fixtures_valid(self):
+        for r in RECORDS:
+            with self.subTest(vendor=r["vendor"]):
+                self.assertEqual(validate_record(r), [])
+
+    def test_validator_requires_branch(self):
+        bad = {k: v for k, v in RECORDS[5].items() if k != "branch"}
+        self.assertIn("missing branch", validate_record(bad))
+
+    def test_validator_rejects_fix_on_other_branch(self):
+        # Audit: an 8.4.0 fix on an 8.5 record used to pass.
+        bad = {**UPSTREAM_85, "fixed": "8.4.0"}
+        self.assertIn("fixed version 8.4.0 is not on branch 8.5", validate_record(bad))
+
+    def test_validator_rejects_impossible_date(self):
+        for d in ("2026-99-99", "20261022", "2026-10-22T00:00", None):
+            with self.subTest(d=d):
+                self.assertIn("checked must be a real YYYY-MM-DD date",
+                              validate_record({**UPSTREAM_85, "checked": d}))
+
+    def test_validator_unknown_needs_note(self):
+        bad = {k: v for k, v in RECORDS[2].items() if k != "note"}
+        self.assertIn("unknown record needs a note saying why", validate_record(bad))
+
+    def test_loader_refuses_invalid_data(self):
+        # Audit: the loader used to accept records the validator rejects.
+        source = MagicMock()
+        source.name = "bad.json"
+        bad = {k: v for k, v in UPSTREAM_85.items() if k not in ("cve", "branch")}
+        source.read_text.return_value = json.dumps({"cves": [CVE], "records": [bad]})
+        package = MagicMock()
+        data = package.__truediv__.return_value
+        data.is_dir.return_value = True
+        data.iterdir.return_value = [source]
+        with patch("phpfixed.resolve.resources.files", return_value=package):
+            with self.assertRaisesRegex(ValueError, "bad.json: upstream/php .*missing branch"):
+                load_records({CVE})
 
     def test_both_cves_present(self):
         cves = {r["cve"] for r in load_records()}
@@ -102,11 +158,11 @@ class TestExitCode(unittest.TestCase):
         return resolve(inv, RECORDS, [CVE])
 
     def test_all_fixed(self):
-        r = self.report([b("docker-official", "8.5", "php", "8.5.12", "upstream")])
+        r = self.report([up("8.5.12")])
         self.assertEqual(exit_code(r), 0)
 
     def test_not_fixed_wins_over_unknown(self):
-        r = self.report([b("docker-official", "8.5", "php", "8.5.11", "upstream"),
+        r = self.report([up("8.5.11"),
                          b("cpanel", "*", "ea-php74", "7.4.33-12.el9", "vercmp-rpm")])
         self.assertEqual(exit_code(r), 1)
 
@@ -115,7 +171,7 @@ class TestExitCode(unittest.TestCase):
         self.assertEqual(exit_code(r), 2)
 
     def test_stale_worker_fails_even_when_fixed(self):
-        r = self.report([b("docker-official", "8.5", "php", "8.5.12", "upstream")],
+        r = self.report([up("8.5.12")],
                         workers=[{"pid": "1", "exe": "/usr/sbin/php-fpm (deleted)", "stale": True}])
         self.assertEqual(exit_code(r), 1)
 

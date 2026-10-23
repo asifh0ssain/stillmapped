@@ -117,6 +117,11 @@ class TestDispatch(unittest.TestCase):
         self.assertEqual(compare("upstream", "8.5.12", "8.5.12"), 0)
         self.assertEqual(compare("upstream", "8.4.100", "8.4.27"), 1)
 
+    def test_upstream_refuses_prerelease(self):
+        for v in ("8.5.12RC1", "8.5.12-dev", "8.5.12junk", "8.5", " "):
+            with self.subTest(v=v), self.assertRaises(ValueError):
+                compare("upstream", v, "8.5.12")
+
     def test_unknown_scheme(self):
         with self.assertRaises(ValueError):
             compare("nope", "1", "2")

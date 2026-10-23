@@ -5,6 +5,8 @@ comparators return -1, 0 or 1. Character classes are ASCII-only, matching
 the C originals.
 """
 
+import re
+
 _DIGITS = "0123456789"
 _ALPHA = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
@@ -192,9 +194,25 @@ def compare_rpm(a, b):
 
 # --- Upstream PHP ---------------------------------------------------------
 
+def branch(version):
+    """PHP branch ('8.2') from any version string, ignoring an epoch."""
+    m = re.match(r"(?:\d+:)?(\d+)\.(\d+)", version)
+    return f"{m.group(1)}.{m.group(2)}" if m else ""
+
+
+def _release(version):
+    # Only a plain release is comparable. 8.5.12RC1 and 8.5.12-dev are not
+    # 8.5.12, and guessing their order could call a pre-release fixed.
+    m = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", version.strip())
+    if not m:
+        raise ValueError(f"not a plain PHP release: {version!r}")
+    return tuple(int(g) for g in m.groups())
+
+
 def compare_upstream(a, b):
-    """Compare plain PHP versions like '8.5.12' (Docker tags, Homebrew)."""
-    return rpmvercmp(a.strip(), b.strip())
+    """Compare plain PHP releases like '8.5.12' (Docker, Homebrew, DirectAdmin)."""
+    ra, rb = _release(a), _release(b)
+    return (ra > rb) - (ra < rb)
 
 
 SCHEMES = {

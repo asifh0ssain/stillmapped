@@ -90,7 +90,7 @@ class TestRpm(unittest.TestCase):
         self.assertEqual(got, {("php8", "8.3"), ("php7", "7.4")})
 
     def test_branch_ignores_epoch(self):
-        self.assertEqual(c._branch("1:7.4.33-31+0~20261021"), "7.4")
+        self.assertEqual(c.branch("1:7.4.33-31+0~20261021"), "7.4")
 
 
 class TestFilesystemSources(unittest.TestCase):
@@ -98,8 +98,8 @@ class TestFilesystemSources(unittest.TestCase):
         root = tempfile.mkdtemp()
         os.makedirs(os.path.join(root, "opt/homebrew/Cellar/php/8.5.12_1"))
         os.makedirs(os.path.join(root, "opt/homebrew/Cellar/php@8.2/8.2.34"))
-        got = {(b["stream"], b["version"]) for b in c.from_homebrew(root)}
-        self.assertEqual(got, {("8.5", "8.5.12"), ("8.2", "8.2.34")})
+        got = {(b["vendor"], b["branch"], b["version"]) for b in c.from_homebrew(root)}
+        self.assertEqual(got, {("upstream", "8.5", "8.5.12"), ("upstream", "8.2", "8.2.34")})
 
     def test_directadmin_requires_marker(self):
         self.assertEqual(c.from_directadmin(tempfile.mkdtemp(), fake_runner({})), [])

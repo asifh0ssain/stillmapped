@@ -13,6 +13,8 @@ import re
 import shutil
 import subprocess
 
+from .vercmp import branch
+
 RUN_TIMEOUT = 20  # seconds, per subprocess
 
 # Binary package names that carry the PHP runtime. Extension packages
@@ -57,15 +59,14 @@ def os_release(root="/"):
     return osid, stream
 
 
-def _branch(version):
-    """PHP branch ('8.2') from a version string, ignoring any epoch."""
-    m = re.match(r"(?:\d+:)?(\d+)\.(\d+)", version)
-    return f"{m.group(1)}.{m.group(2)}" if m else ""
-
-
 def _build(source, vendor, stream, package, version, scheme, where):
     return {"source": source, "vendor": vendor, "stream": stream, "package": package,
-            "branch": _branch(version), "version": version, "scheme": scheme, "where": where}
+            "branch": branch(version), "version": version, "scheme": scheme, "where": where}
+
+
+def _upstream(source, version, where):
+    """A build compiled from php.net source; judged by the upstream release."""
+    return _build(source, "upstream", "*", "php", version, "upstream", where)
 
 
 def from_dpkg(osr, runner=run):
@@ -145,9 +146,7 @@ def from_docker(runner=run):
             pairs = []
         version = next((p.split("=", 1)[1] for p in pairs if p.startswith("PHP_VERSION=")), "")
         if version:
-            ref = f"{repo}:{img.get('Tag', '')}"
-            builds.append(_build("docker", "docker-official", _branch(version), "php",
-                                 version, "upstream", ref))
+            builds.append(_upstream("docker", version, f"{repo}:{img.get('Tag', '')}"))
     return builds
 
 
@@ -157,8 +156,7 @@ def from_homebrew(root="/"):
         for d in sorted(glob.glob(os.path.join(root, cellar, "php*", "*"))):
             version = re.sub(r"_\d+$", "", os.path.basename(d))
             if re.match(r"\d+\.\d+\.\d+$", version):
-                builds.append(_build("homebrew", "homebrew", _branch(version), "php",
-                                     version, "upstream", d))
+                builds.append(_upstream("homebrew", version, d))
     return builds
 
 
@@ -172,8 +170,7 @@ def from_directadmin(root="/", runner=run):
             continue
         m = _PHP_V.search(runner([binpath, "-v"]) or "")
         if m:
-            builds.append(_build("binary", "directadmin", _branch(m.group(1)), "php",
-                                 m.group(1), "upstream", binpath))
+            builds.append(_upstream("directadmin", m.group(1), binpath))
     return builds
 
 
@@ -204,7 +201,9 @@ def collect(root="/", runner=run):
               + from_homebrew(root) + from_directadmin(root, runner))
     seen, unique = set(), []
     for b in builds:
-        key = (b["vendor"], b["stream"], b["package"], b["version"])
+        # Same package seen through several binaries (fpm, cli) is one build;
+        # the same version from Docker and Homebrew is two.
+        key = (b["source"], b["vendor"], b["stream"], b["package"], b["version"])
         if key not in seen:
             seen.add(key)
             unique.append(b)
