@@ -7,6 +7,7 @@ comparison agrees. Anything ambiguous resolves to "unknown", never to "fixed".
 
 import datetime
 import json
+import re
 from importlib import resources
 
 from .vercmp import SCHEMES, branch, compare
@@ -41,6 +42,12 @@ def validate_record(r):
             problems.append("unknown record needs a note saying why")
     elif status != NOT_FIXED:
         problems.append(f"bad status {status!r}")
+    if r.get("origin") is not None:
+        try:
+            if r.get("fixed") and not re.search(r["origin"], r["fixed"]):
+                problems.append(f"fixed version {r['fixed']} doesn't match its own origin")
+        except (re.error, TypeError):
+            problems.append(f"bad origin pattern {r['origin']!r}")
     if not str(r.get("evidence_url", "")).startswith("https://"):
         problems.append("evidence_url must be https")
     if not _is_date(r.get("checked")):
@@ -109,22 +116,29 @@ def resolve_one(build, cve, records):
         cmp = compare(rec["match"], build["version"], rec["fixed"])
     except ValueError as e:
         return {**base, "status": UNKNOWN, "reason": f"unparseable version: {e}"}
-    if cmp >= 0:
-        return {**base, "status": FIXED, "reason": f"{build['version']} >= {rec['fixed']}"}
-    return {**base, "status": NOT_FIXED, "reason": f"{build['version']} < fixed {rec['fixed']}"}
+    if cmp < 0:
+        return {**base, "status": NOT_FIXED, "reason": f"{build['version']} < fixed {rec['fixed']}"}
+    # A rebuild from another source can carry a higher version without the
+    # vendor's patch; only the vendor's own version pattern proves the fix.
+    if rec.get("origin") and not re.search(rec["origin"], build["version"]):
+        return {**base, "status": UNKNOWN,
+                "reason": f"{build['version']} doesn't look like a {rec['vendor']} build; "
+                          "can't confirm it carries the fix"}
+    return {**base, "status": FIXED, "reason": f"{build['version']} >= {rec['fixed']}"}
 
 
 def resolve(inventory, records, cves):
     results = [resolve_one(b, cve, records) for b in inventory["builds"] for cve in cves]
     stale = [w for w in inventory["workers"] if w["stale"]]
-    return {"results": results, "stale_workers": stale}
+    return {"results": results, "stale_workers": stale, "problems": inventory.get("problems", [])}
 
 
 def exit_code(report):
-    """0 all fixed, 1 something not fixed or stale workers, 2 something unknown."""
+    """0 all fixed, 1 something not fixed or stale workers, 2 something
+    unknown or part of the host not checked."""
     statuses = {r["status"] for r in report["results"]}
     if NOT_FIXED in statuses or report["stale_workers"]:
         return 1
-    if UNKNOWN in statuses:
+    if UNKNOWN in statuses or report["problems"]:
         return 2
     return 0

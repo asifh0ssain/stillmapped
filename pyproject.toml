@@ -7,7 +7,7 @@ name = "phpfixed"
 dynamic = ["version"]
 description = "Is this PHP build fixed? Read-only, offline, vendor-aware CVE fix resolver."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.9"
 license = "MIT"
 authors = [{ name = "Asif Hossain" }]
 dependencies = []

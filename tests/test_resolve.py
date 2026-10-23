@@ -89,6 +89,14 @@ class TestResolveOne(unittest.TestCase):
             with self.subTest(first=order[0]["fixed"]):
                 self.assertEqual(resolve_one(up("8.5.12"), CVE, order)["status"], "unknown")
 
+    def test_origin_gates_fixed_only(self):
+        # Audit: 8.3.6-99acme1 on Ubuntu compared above the fix and passed.
+        recs = [{**RECORDS[0], "origin": "ubuntu"}]
+        status = lambda v: resolve_one(b("ubuntu", "24.04", "php8.3", v, "vercmp-deb"), CVE, recs)["status"]
+        self.assertEqual(status("8.3.6-99acme1"), "unknown")
+        self.assertEqual(status("8.3.6-0ubuntu0.24.04.13"), "fixed")
+        self.assertEqual(status("8.3.6-0ubuntu0.24.04.12"), "not-fixed")
+
     def test_identical_duplicates_still_resolve(self):
         self.assertEqual(resolve_one(up("8.5.12"), CVE, [UPSTREAM_85, dict(UPSTREAM_85)])["status"],
                          "fixed")
@@ -129,6 +137,12 @@ class TestBundledData(unittest.TestCase):
                 self.assertIn("checked must be a real YYYY-MM-DD date",
                               validate_record({**UPSTREAM_85, "checked": d}))
 
+    def test_validator_origin(self):
+        self.assertIn("fixed version 8.3.6-0ubuntu0.24.04.13 doesn't match its own origin",
+                      validate_record({**RECORDS[0], "origin": "debian"}))
+        self.assertIn("bad origin pattern '('", validate_record({**RECORDS[0], "origin": "("}))
+        self.assertEqual(validate_record({**RECORDS[0], "origin": "ubuntu"}), [])
+
     def test_validator_unknown_needs_note(self):
         bad = {k: v for k, v in RECORDS[2].items() if k != "note"}
         self.assertIn("unknown record needs a note saying why", validate_record(bad))
@@ -153,9 +167,18 @@ class TestBundledData(unittest.TestCase):
 
 
 class TestExitCode(unittest.TestCase):
-    def report(self, builds, workers=()):
-        inv = {"builds": builds, "workers": list(workers)}
+    def report(self, builds, workers=(), problems=()):
+        inv = {"builds": builds, "workers": list(workers), "problems": list(problems)}
         return resolve(inv, RECORDS, [CVE])
+
+    def test_problem_makes_all_fixed_unknown(self):
+        # Audit: a part of the host that couldn't be checked still exited 0.
+        r = self.report([up("8.5.12")], problems=["no /proc"])
+        self.assertEqual(exit_code(r), 2)
+        self.assertEqual(exit_code(self.report([], problems=["dpkg unreadable"])), 2)
+
+    def test_not_fixed_wins_over_problems(self):
+        self.assertEqual(exit_code(self.report([up("8.5.11")], problems=["x"])), 1)
 
     def test_all_fixed(self):
         r = self.report([up("8.5.12")])
