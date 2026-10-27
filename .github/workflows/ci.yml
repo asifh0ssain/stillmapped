@@ -1,0 +1,51 @@
+name: ci
+on: [push, pull_request]
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14"]
+    container: python:${{ matrix.python }}-slim
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python -m unittest discover -s tests -t .
+
+  # Real distro, real PHP from the distro's own repositories, real dpkg/rpm.
+  distro:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: "debian:12", source: dpkg, check: verdict, oracle: deb }
+          - { image: "debian:13", source: dpkg, check: verdict }
+          - { image: "ubuntu:22.04", source: dpkg, check: verdict }
+          - { image: "ubuntu:24.04", source: dpkg, check: verdict }
+          - { image: "ubuntu:26.04", source: dpkg, check: verdict }
+          - { image: "almalinux:9", source: rpm, oracle: rpm }
+          - { image: "opensuse/leap:15.6", source: rpm, py: python3.11 }
+    container: ${{ matrix.image }}
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the distro's PHP
+        run: |
+          if command -v apt-get; then
+            apt-get update && apt-get install -y --no-install-recommends php-cli python3
+          elif command -v dnf; then
+            dnf -y module enable php:8.2 && dnf -y install php-cli python3
+          else
+            zypper -n install php8 python311
+          fi
+      - run: ${{ matrix.py || 'python3' }} ci/smoke.py ${{ matrix.source }} ${{ matrix.check }}
+      - if: matrix.oracle
+        run: ${{ matrix.py || 'python3' }} -m ci.oracle ${{ matrix.oracle }} 2000
