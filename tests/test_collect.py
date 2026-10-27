@@ -191,9 +191,11 @@ class TestDocker(unittest.TestCase):
 
     def test_official_and_derived_images(self):
         # Audit: images built FROM php used to be skipped.
+        # Review: PHP_VERSION alone (set by hand next to a distro PHP) read as proof.
         (builds, problems), _ = self.docker(
-            ("sha256:a", ["php:8.5-fpm"], ["PHP_VERSION=8.5.12"]),
-            ("sha256:b", ["acme/app:1"], ["PATH=/x", "PHP_VERSION=8.5.11"]),
+            ("sha256:a", ["php:8.5-fpm"], ["PHP_VERSION=8.5.12", "PHP_SHA256=ab"]),
+            ("sha256:b", ["acme/app:1"], ["PATH=/x", "PHP_VERSION=8.5.11", "PHP_SHA256=cd"]),
+            ("sha256:d", ["acme/apt-php:1"], ["PHP_VERSION=8.3.36"]),
             ("sha256:c", ["nginx:1"], ["NGINX_VERSION=1.27"]))
         self.assertEqual({(b["where"], b["version"]) for b in builds},
                          {("php:8.5-fpm", "8.5.12"), ("acme/app:1", "8.5.11")})
@@ -243,82 +245,156 @@ class TestFilesystemSources(unittest.TestCase):
         self.assertIn("php74", problems[0])
 
 
-def fake_proc(root, pid, exe=None, maps="", ns="mnt:[1]"):
+def fake_proc(root, pid, exe=None, maps="", proot=None):
+    """A /proc/PID entry; proot is the process's root filesystem (a container's)."""
     d = os.path.join(root, "proc", str(pid))
-    os.makedirs(os.path.join(d, "ns"))
+    os.makedirs(d)
     if exe:
         os.symlink(exe, os.path.join(d, "exe"))
-    os.symlink(ns, os.path.join(d, "ns", "mnt"))
+    os.symlink(proot or root, os.path.join(d, "root"))
     with open(os.path.join(d, "maps"), "w") as fh:
         fh.write(maps)
     return d
 
 
+def ubuntu_host():
+    root = root_with_dpkg(DPKG)
+    write(root, "etc/os-release", 'ID=ubuntu\nVERSION_ID="24.04"\n')
+    write(root, "var/lib/dpkg/info/php8.3-fpm.list", "/.\n/usr/sbin/php-fpm8.3\n")
+    write(root, "var/lib/dpkg/info/php8.3-cli.list", "/usr/bin/php8.3")  # no trailing newline
+    write(root, "var/lib/dpkg/info/libapache2-mod-php8.3:amd64.list",
+          "/usr/lib/apache2/modules/libphp8.3.so\n")
+    fake_proc(root, 1, "/usr/lib/systemd/systemd")
+    return root
+
+
+def mapped(path):
+    return f"7f00-7f01 r-xp 00000000 08:01 1234   {path}\n"
+
+
 class TestWorkers(unittest.TestCase):
     def setUp(self):
-        self.root = tempfile.mkdtemp()
-        fake_proc(self.root, 1, "/usr/lib/systemd/systemd")
+        self.root = ubuntu_host()
+        self.builds = c.from_dpkg(("ubuntu", "24.04"), self.root)[0]
+        for p in (patch.object(c.os, "geteuid", return_value=0),
+                  patch.object(c, "_root_owned", return_value=True)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def workers(self, runner=fake_runner({})):
+        return c.running_workers(self.root, self.builds, runner)
 
     def test_stale_worker(self):
         fake_proc(self.root, 101, "/usr/sbin/php-fpm8.3 (deleted)")
         fake_proc(self.root, 102, "/usr/sbin/php-fpm8.3")
         fake_proc(self.root, 103, "/usr/sbin/nginx")
         fake_proc(self.root, 2)                       # kernel thread: no exe
-        procs, problems = c.running_workers(self.root)
+        procs, extra, problems = self.workers()
         self.assertEqual({(p["pid"], p["stale"]) for p in procs}, {("101", True), ("102", False)})
-        self.assertEqual(problems, [])
+        self.assertEqual((extra, problems), ([], []))
 
     def test_apache_mod_php(self):
         # Audit: Apache running mod_php used to be ignored, so a stale
         # libphp after an upgrade went unreported.
-        mapped = "7f00-7f01 r-xp 00000000 08:01 1234   /usr/lib/apache2/modules/libphp8.3.so (deleted)\n"
-        fake_proc(self.root, 200, "/usr/sbin/apache2", maps=mapped)
-        fake_proc(self.root, 201, "/usr/sbin/apache2", maps="7f00-7f01 r-xp 0 08:01 1 /usr/lib/x.so\n")
-        procs, _ = c.running_workers(self.root)
+        fake_proc(self.root, 200, "/usr/sbin/apache2", maps=mapped("/usr/lib/apache2/modules/libphp8.3.so (deleted)"))
+        fake_proc(self.root, 201, "/usr/sbin/apache2", maps=mapped("/usr/lib/x.so"))
+        procs, _, problems = self.workers()
         self.assertEqual([(p["pid"], p["stale"]) for p in procs], [("200", True)])
+        self.assertEqual(problems, [])
 
-    def test_unowned_worker_is_a_problem(self):
+    def test_suse_mod_php_and_rpm_owner(self):
+        # Review: SUSE's httpd-prefork and mod_php8.so were not recognized.
+        with patch.object(c, "_which", return_value="/usr/bin/rpm"):
+            self.builds = c.from_rpm(("sles", "15.7"), fake_runner(
+                {"rpm -qa": "apache2-mod_php8\t(none):8.3.36-150700.3.24.1"}))[0]
+        self.assertEqual([b["package"] for b in self.builds], ["php8"])
+        fake_proc(self.root, 300, "/usr/sbin/httpd-prefork", maps=mapped("/usr/lib64/apache2/mod_php8.so (deleted)"))
+        procs, _, problems = self.workers(fake_runner({"rpm -qf": "apache2-mod_php8\n"}))
+        self.assertEqual([(p["pid"], p["stale"]) for p in procs], [("300", True)])
+        self.assertEqual(problems, [])
+
+    def test_php_cli_daemon_is_a_worker(self):
+        # Review: a long-running php8.3 CLI process was not seen at all.
+        fake_proc(self.root, 400, "/usr/bin/php8.3")
+        procs, _, problems = self.workers()
+        self.assertEqual(([p["pid"] for p in procs], problems), (["400"], []))
+
+    def test_php_not_installed_by_a_checked_build_is_a_problem(self):
         # Audit: PHP running from outside any checked build exited 0.
+        # Review: so did /usr/local/php83 without DirectAdmin and an
+        # apxs-installed libphp.so, because only the path prefix was checked.
         fake_proc(self.root, 42, "/usr/local/bin/php-fpm")
-        _, problems = c.running_workers(self.root)
-        self.assertEqual(len(problems), 1)
-        self.assertIn("/usr/local/bin/php-fpm", problems[0])
+        fake_proc(self.root, 43, "/usr/local/php83/sbin/php-fpm")
+        fake_proc(self.root, 44, "/usr/sbin/apache2", maps=mapped("/usr/lib/apache2/modules/libphp.so"))
+        procs, _, problems = self.workers()
+        self.assertEqual(procs, [])
+        self.assertEqual(len(problems), 3)
 
-    def test_container_worker_left_to_docker_check(self):
-        fake_proc(self.root, 43, "/usr/local/sbin/php-fpm", ns="mnt:[2]")
-        procs, problems = c.running_workers(self.root)
-        self.assertEqual((len(procs), problems), (1, []))
+    def test_source_build_needs_root_owned_header(self):
+        write(self.root, "usr/local/php83/sbin/php-fpm", "")
+        write(self.root, "usr/local/php83/include/php/main/php_version.h", '#define PHP_VERSION "8.3.36"\n')
+        fake_proc(self.root, 50, "/usr/local/php83/sbin/php-fpm")
+        _, extra, problems = self.workers()
+        self.assertEqual([(b["vendor"], b["version"]) for b in extra], [("upstream", "8.3.36")])
+        self.assertEqual(problems, [])
+        with patch.object(c, "_root_owned", return_value=False):
+            self.assertEqual(len(self.workers()[2]), 1)
+
+    def test_container_checked_against_its_own_packages(self):
+        # Review: any other mount namespace was assumed to be Docker and skipped.
+        box = root_with_dpkg(dpkg_status(("php8.2-fpm", "8.2.35-1~deb12u1", OK)))
+        write(box, "etc/os-release", 'ID=debian\nVERSION_ID="12"\n')
+        write(box, "var/lib/dpkg/info/php8.2-fpm.list", "/usr/sbin/php-fpm8.2\n")
+        fake_proc(self.root, 60, "/usr/sbin/php-fpm8.2", proot=box)
+        fake_proc(self.root, 61, "/srv/legacy/php-7.2/sbin/php-fpm", proot=box)
+        procs, extra, problems = self.workers()
+        self.assertEqual([(b["vendor"], b["stream"], b["package"]) for b in extra], [("debian", "12", "php8.2")])
+        self.assertEqual([p["pid"] for p in procs], ["60"])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("/srv/legacy", problems[0])
+
+    def test_user_cannot_fake_a_restart_needed(self):
+        # Review: a user's deleted php-fpm forced exit 1.
+        fake_proc(self.root, 70, "/home/eve/php-fpm (deleted)")
+        procs, _, problems = self.workers()
+        self.assertEqual((procs, len(problems)), ([], 1))
+
+    def test_non_root_is_a_problem(self):
+        # Review: with hidepid, other users' processes are invisible, not unreadable.
+        with patch.object(c.os, "geteuid", return_value=1000):
+            self.assertTrue(any("not run as root" in p for p in self.workers()[2]))
 
     def test_unreadable_is_a_problem(self):
         # Audit: unreadable processes were only a printed note.
         fake_proc(self.root, 300, "/usr/sbin/php-fpm8.3")
         with patch.object(c.os, "readlink", side_effect=PermissionError):
-            _, problems = c.running_workers(self.root)
-        self.assertTrue(any("unreadable" in p for p in problems))
+            self.assertTrue(any("unreadable" in p for p in self.workers()[2]))
 
     def test_no_proc_is_a_problem(self):
-        self.assertEqual(len(c.running_workers(tempfile.mkdtemp())[1]), 1)
+        self.assertEqual(len(c.running_workers(tempfile.mkdtemp())[2]), 1)
 
 
 class TestCollect(unittest.TestCase):
     def setUp(self):
-        self.root = root_with_dpkg(DPKG)
-        write(self.root, "etc/os-release", 'ID=ubuntu\nVERSION_ID="24.04"\n')
-        fake_proc(self.root, 1, "/usr/lib/systemd/systemd")
-        patcher = patch.object(c, "_which", return_value=None)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        self.root = ubuntu_host()
+        for p in (patch.object(c, "_which", return_value=None),
+                  patch.object(c.os, "geteuid", return_value=0)):
+            p.start()
+            self.addCleanup(p.stop)
 
     def test_dedupes_binaries_of_same_build(self):
         inv = c.collect(self.root, fake_runner({}))
         self.assertEqual(len(inv["builds"]), 2)  # ubuntu php8.3 + sury php8.5
+        self.assertIn("php8.3-fpm, php8.3-cli", inv["builds"][0]["where"])
         self.assertEqual(inv["problems"], [])
 
-    def test_running_php_with_no_build_is_a_problem(self):
+    def test_no_php_is_a_problem(self):
+        # Review: a host with nothing found exited 0.
         os.remove(os.path.join(self.root, "var/lib/dpkg/status"))
         fake_proc(self.root, 50, "/usr/sbin/php-fpm8.3")
-        inv = c.collect(self.root, fake_runner({}))
-        self.assertIn("PHP is running but no installed PHP build was found", inv["problems"])
+        problems = c.collect(self.root, fake_runner({}))["problems"]
+        self.assertIn("no PHP build found", problems)
+        self.assertTrue(any("pid 50" in p for p in problems))
 
 
 if __name__ == "__main__":

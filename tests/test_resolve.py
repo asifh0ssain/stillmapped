@@ -9,13 +9,14 @@ CVE = "CVE-TEST-0001"
 
 # Fixture records only. Real records live in phpfixed/data/ and must be
 # verified against the vendor's own advisory.
+UBUNTU_2404 = r"^8\.3\.6-0ubuntu0\.24\.04\.\d+$"
 RECORDS = [
     {"cve": CVE, "vendor": "ubuntu", "stream": "24.04", "package": "php8.3", "branch": "8.3",
      "match": "vercmp-deb", "fixed": "8.3.6-0ubuntu0.24.04.13", "status": "fixed",
-     "evidence_url": "https://example.invalid/usn", "checked": "2026-10-21"},
+     "origin": UBUNTU_2404, "evidence_url": "https://example.invalid/usn", "checked": "2026-10-21"},
     {"cve": CVE, "vendor": "sury", "stream": "*", "package": "php8.5", "branch": "8.5",
      "match": "vercmp-deb", "fixed": "8.5.12-1", "status": "fixed",
-     "evidence_url": "https://example.invalid/sury", "checked": "2026-10-21"},
+     "origin": r"^8\.5\.\d+-", "evidence_url": "https://example.invalid/sury", "checked": "2026-10-21"},
     {"cve": CVE, "vendor": "cpanel", "stream": "*", "package": "ea-php74", "branch": "7.4",
      "status": "unknown", "note": "backported without a version change",
      "evidence_url": "https://example.invalid/ea4", "checked": "2026-10-21"},
@@ -27,7 +28,7 @@ RECORDS = [
      "evidence_url": "https://example.invalid/php", "checked": "2026-10-21"},
     {"cve": CVE, "vendor": "rhel", "stream": "9", "package": "php", "branch": "8.2",
      "match": "vercmp-rpm", "fixed": "8.2.35-1.module+el9.8.0+25111+a1450321", "status": "fixed",
-     "evidence_url": "https://example.invalid/rhsa", "checked": "2026-10-21"},
+     "origin": r"^8\.2\.\d+-\d+\.module\+el9\.", "evidence_url": "https://example.invalid/rhsa", "checked": "2026-10-21"},
 ]
 UPSTREAM_85 = RECORDS[4]
 
@@ -91,9 +92,12 @@ class TestResolveOne(unittest.TestCase):
 
     def test_origin_gates_fixed_only(self):
         # Audit: 8.3.6-99acme1 on Ubuntu compared above the fix and passed.
-        recs = [{**RECORDS[0], "origin": "ubuntu"}]
-        status = lambda v: resolve_one(b("ubuntu", "24.04", "php8.3", v, "vercmp-deb"), CVE, recs)["status"]
-        self.assertEqual(status("8.3.6-99acme1"), "unknown")
+        # Review: so did PPA rebuilds and an epoch, while "ubuntu" was the origin.
+        status = lambda v: resolve_one(b("ubuntu", "24.04", "php8.3", v, "vercmp-deb"), CVE, RECORDS)["status"]
+        for v in ("8.3.6-99acme1", "8.3.20-1~ubuntu24.04.1", "8.3.7-0ubuntu0.24.04.1~ppa1",
+                  "1:8.3.0-0ubuntu1", "1:8.3.6-0ubuntu0.24.04.13"):
+            with self.subTest(v=v):
+                self.assertEqual(status(v), "unknown")
         self.assertEqual(status("8.3.6-0ubuntu0.24.04.13"), "fixed")
         self.assertEqual(status("8.3.6-0ubuntu0.24.04.12"), "not-fixed")
 
@@ -141,7 +145,10 @@ class TestBundledData(unittest.TestCase):
         self.assertIn("fixed version 8.3.6-0ubuntu0.24.04.13 doesn't match its own origin",
                       validate_record({**RECORDS[0], "origin": "debian"}))
         self.assertIn("bad origin pattern '('", validate_record({**RECORDS[0], "origin": "("}))
-        self.assertEqual(validate_record({**RECORDS[0], "origin": "ubuntu"}), [])
+        self.assertEqual(validate_record(RECORDS[0]), [])
+        self.assertIn("distro record needs an origin pattern anchored with ^",
+                      validate_record({**RECORDS[0], "origin": "ubuntu"}))
+        self.assertEqual(validate_record(UPSTREAM_85), [])  # upstream versions need no origin
 
     def test_validator_unknown_needs_note(self):
         bad = {k: v for k, v in RECORDS[2].items() if k != "note"}
@@ -198,8 +205,9 @@ class TestExitCode(unittest.TestCase):
                         workers=[{"pid": "1", "exe": "/usr/sbin/php-fpm (deleted)", "stale": True}])
         self.assertEqual(exit_code(r), 1)
 
-    def test_no_php(self):
-        self.assertEqual(exit_code(self.report([])), 0)
+    def test_no_php_is_a_problem_not_a_pass(self):
+        # Review: an empty host exited 0. collect() reports it as a problem.
+        self.assertEqual(exit_code(self.report([], problems=["no PHP build found"])), 2)
 
 
 if __name__ == "__main__":

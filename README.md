@@ -11,9 +11,12 @@ vendor fix records bundled with the tool, and never calls a build fixed on a gue
 
 - dpkg (Debian, Ubuntu, Sury) and rpm (RHEL family, SUSE, Remi) packages
 - cPanel `ea-php`, CloudLinux `alt-php`, Plesk `plesk-php`
-- Docker images carrying `PHP_VERSION` (official `php` images and images built from them)
+- Docker images built from the official `php` image
 - Homebrew `php` / `php@X.Y`, DirectAdmin CustomBuild `/usr/local/phpXX`
-- Running php-fpm, php-cgi, lsphp and Apache mod_php: still running a pre-upgrade binary?
+- Every running PHP (php-fpm, php-cgi, lsphp, CLI daemons, Apache or NGINX Unit
+  with a PHP module), traced to the package or source build that installed it,
+  inside containers too. PHP that no checked build installed is reported, and so
+  is PHP still running a pre-upgrade binary.
 
 ## Usage
 
@@ -38,6 +41,8 @@ Run as root to see every running process.
 - No network.
 - Ambiguity resolves to `unknown`: no record, conflicting records, pre-release
   versions, a version not matching the vendor's own pattern, invalid data.
+- Exit 0 needs at least one PHP build found, every one fixed, and every running
+  PHP traced to a checked build. Run as non-root, it can't be 0.
 
 ## Install
 
@@ -59,7 +64,10 @@ Each one fails closed (`unknown` or exit 2), never `fixed`.
 
 - AlmaLinux, Rocky and openSUSE Leap have no records of their own yet.
 - LiteSpeed `lsphp` packages are not collected.
-- A custom Docker image with apt-installed PHP and no `PHP_VERSION` is not detected.
+- Docker images whose PHP comes from a distro package are checked only while running.
+- Running PHP inside an RPM-based container is reported as unchecked.
+- Version strings are trusted as the package manager records them. A repository
+  that copies a vendor's exact version format can't be told apart.
 - DirectAdmin's header path is unverified on a real DirectAdmin host.
 
 ## Data
@@ -71,21 +79,24 @@ per vendor build:
 {
   "vendor": "debian", "stream": "12", "package": "php8.2", "branch": "8.2",
   "status": "fixed", "match": "vercmp-deb", "fixed": "8.2.35-1~deb12u1",
-  "origin": "deb\\d+u\\d+",
+  "origin": "^8\\.2\\.\\d+-\\d+~deb12u\\d+$",
   "evidence_url": "https://security-tracker.debian.org/tracker/CVE-2026-109618",
   "checked": "2026-10-22"
 }
 ```
 
-`status` is `fixed`, `not-fixed`, or `unknown` with a `note`. `origin` is a
-pattern the installed version must contain to be called fixed, so a rebuild
-with a higher version isn't mistaken for the vendor's patched one. Every record
+`status` is `fixed`, `not-fixed`, or `unknown` with a `note`. `origin` is the
+vendor's exact version format, anchored with `^`, which the installed version
+must match to be called fixed. Distros backport fixes onto old upstream
+versions, so without it a third-party rebuild with a higher version (or an
+epoch) would compare as newer and pass. Every record
 is validated on load and an invalid one stops the run. To add a record, cite
 the vendor's own advisory page in `evidence_url`; a PR without one is closed.
 
 ## How it's tested
 
-- Unit tests, one named regression test per defect found in audit, on Python 3.9 to 3.14.
+- Unit tests on Python 3.9 to 3.14, with a named regression test for every defect
+  found in two audits, the second by an independent reviewer.
 - CI installs each distro's own PHP in Debian, Ubuntu, AlmaLinux and openSUSE
   containers and runs phpfixed against it. On distros with records, every
   build must get a verdict.

@@ -37,6 +37,11 @@ def validate_record(r):
             problems.append("fixed record without a fixed version")
         elif branch(r["fixed"]) != r.get("branch"):
             problems.append(f"fixed version {r['fixed']} is not on branch {r.get('branch')}")
+        # A distro fix is often backported onto an older upstream version, so a
+        # rebuild with a higher version (or an epoch) would compare as newer.
+        # Only the vendor's exact version format, anchored, proves the fix.
+        if r.get("match") != "upstream" and not str(r.get("origin", "")).startswith("^"):
+            problems.append("distro record needs an origin pattern anchored with ^")
     elif status == UNKNOWN:
         if not r.get("note"):
             problems.append("unknown record needs a note saying why")

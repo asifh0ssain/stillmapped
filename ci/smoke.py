@@ -3,7 +3,8 @@
 Usage: smoke.py SOURCE [verdict]
 Fails unless phpfixed finds a SOURCE build (dpkg, rpm). With 'verdict', also
 fails when any of those builds resolves to unknown: on a distro with bundled
-records, the real package must match one.
+records, the real package must match one. Always fails if a running PHP
+(CI starts php-fpm) isn't traced to the package that installed it.
 """
 
 import json
@@ -20,9 +21,13 @@ p = subprocess.run([sys.executable, "-m", "phpfixed", "--json"], capture_output=
 print(p.stdout, p.stderr, sep="\n")
 if p.returncode not in (0, 1, 2):
     fail(f"exit {p.returncode}")
-mine = [r for r in json.loads(p.stdout)["results"] if r["build"]["source"] == source]
+report = json.loads(p.stdout)
+mine = [r for r in report["results"] if r["build"]["source"] == source]
 if not mine:
     fail(f"no {source} build found")
+untraced = [x for x in report["problems"] if "no checked build installed" in x]
+if untraced:
+    fail("running PHP not traced to its package: " + "; ".join(untraced))
 unknown = [f"{r['build']['where']}: {r['reason']}" for r in mine if r["status"] == "unknown"]
 if need_verdict and unknown:
     fail("no verdict for " + "; ".join(unknown))
