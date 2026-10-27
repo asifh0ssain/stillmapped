@@ -21,7 +21,9 @@ from .vercmp import branch
 RUN_TIMEOUT = 20  # seconds, per subprocess
 # Commands are looked up here only, never on the caller's PATH, so a planted
 # 'rpm' or 'docker' earlier on PATH is not run when this runs as root.
-_PATH = "/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"
+# /usr/local/bin and /opt/homebrew/bin are user-writable on a Mac, so root
+# skips them.
+_PATH = "/usr/bin:/bin" + ("" if os.geteuid() == 0 else ":/usr/local/bin:/opt/homebrew/bin")
 # Pinning the socket stops DOCKER_HOST or a docker context from sending the
 # query to another machine.
 _DOCKER = ["docker", "-H", "unix:///var/run/docker.sock"]

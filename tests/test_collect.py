@@ -157,6 +157,16 @@ class TestRun(unittest.TestCase):
         with patch.object(c.shutil, "which", return_value=None):
             self.assertIsNone(c.run(["rpm", "-qa"]))
 
+    def test_root_skips_user_writable_dirs(self):
+        import importlib
+        try:
+            with patch("os.geteuid", return_value=0):
+                self.assertEqual(importlib.reload(c)._PATH, "/usr/bin:/bin")
+            with patch("os.geteuid", return_value=501):
+                self.assertIn("/opt/homebrew/bin", importlib.reload(c)._PATH)
+        finally:
+            importlib.reload(c)
+
 
 class TestDocker(unittest.TestCase):
     def setUp(self):
