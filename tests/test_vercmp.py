@@ -1,6 +1,6 @@
 import unittest
 
-from phpfixed.vercmp import compare, compare_deb, compare_rpm, rpmvercmp, split_deb
+from phpfixed.vercmp import compare, compare_deb, compare_rpm, rpmvercmp, split_evr
 
 
 # Vectors from rpm's own test suite (tests/rpmvercmp.at).
@@ -104,11 +104,11 @@ class TestDebVercmp(unittest.TestCase):
                 self.assertEqual(compare_deb(b, a), -want)
 
     def test_split(self):
-        self.assertEqual(split_deb("1:7.4.33-31+x"), (1, "7.4.33", "31+x"))
-        self.assertEqual(split_deb("8.5.12"), (0, "8.5.12", ""))
-        self.assertEqual(split_deb("1.2-3-4"), (0, "1.2-3", "4"))
+        self.assertEqual(split_evr("1:7.4.33-31+x"), (1, "7.4.33", "31+x"))
+        self.assertEqual(split_evr("8.5.12"), (0, "8.5.12", ""))
+        self.assertEqual(split_evr("1.2-3-4"), (0, "1.2-3", "4"))
         with self.assertRaises(ValueError):
-            split_deb("x:1.0")
+            split_evr("x:1.0")
 
 
 class TestDispatch(unittest.TestCase):

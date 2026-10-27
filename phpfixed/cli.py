@@ -65,7 +65,3 @@ def main(argv=None):
     else:
         _table(inv, report)
     return exit_code(report)
-
-
-if __name__ == "__main__":
-    sys.exit(main())
