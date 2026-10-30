@@ -211,13 +211,19 @@ def from_docker(runner=run):
 
 
 def from_homebrew(root="/"):
-    builds = []
+    """The version is the Cellar directory's name, so the Cellar must be
+    root-owned to count; Homebrew's usual user-owned prefix is not evidence."""
+    builds, problems = [], []
     for cellar in ("opt/homebrew/Cellar", "usr/local/Cellar"):
         for d in sorted(glob.glob(os.path.join(root, cellar, "php*", "*"))):
             formula, version = d.split(os.sep)[-2:]
-            if re.fullmatch(r"php(@\d+\.\d+)?", formula):  # not phpunit, phpstan...
+            if not re.fullmatch(r"php(@\d+\.\d+)?", formula):  # not phpunit, phpstan...
+                continue
+            if _root_owned(root, d[len(root):]):
                 builds.append(_upstream("homebrew", re.sub(r"_\d+$", "", version), d))
-    return builds, []
+            else:
+                problems.append(f"{d} is not root-owned all the way down; not checked")
+    return builds, problems
 
 
 def from_directadmin(root="/"):
@@ -233,10 +239,10 @@ def from_directadmin(root="/"):
             m = _PHP_VERSION_H.search(_slurp(prefix, "/include/php/main/php_version.h").decode("utf-8", "replace"))
         except OSError:
             m = None
-        if m:
+        if m and _root_owned(root, prefix[len(root):] + "/include/php/main/php_version.h"):
             builds.append(_upstream("directadmin", m.group(1), prefix))
         else:
-            problems.append(f"no readable PHP version header under {prefix}")
+            problems.append(f"no readable, root-owned PHP version header under {prefix}")
     return builds, problems
 
 
@@ -301,9 +307,15 @@ def _same_code(d, line, proot, path):
     return mapped == installed, {"mapped_sha256": mapped, "installed_sha256": installed}
 
 
-def _root_owned(path):
-    st = os.stat(path)
-    return st.st_uid == 0 and not st.st_mode & 0o022
+def _root_owned(root, path):
+    """The evidence rule (THREAT_MODEL.md): path inside root, and every
+    directory on the way to it, is owned by root, not group- or
+    world-writable, and not a symlink. root itself may be /proc/PID/root."""
+    sts, cur = [os.stat(root)], root
+    for part in filter(None, path.split("/")):
+        cur = os.path.join(cur, part)
+        sts.append(os.lstat(cur))
+    return all(not stat.S_ISLNK(s.st_mode) and s.st_uid == 0 and not s.st_mode & 0o022 for s in sts)
 
 
 def _dpkg_list(root, pkg, ext="list"):
@@ -411,7 +423,7 @@ def _owner(proot, path, builds, rpm_name, module="php"):
     checked does."""
     prefix = os.path.dirname(os.path.dirname(path))
     for b in builds:
-        if b["module"] == module and (module == "php" and b["where"] == prefix
+        if b["module"] == module and (module == "php" and b["where"] == prefix and _root_owned(proot, path)
                                       or b["source"] == "rpm" and f"{b['where']} {b['version']}" == rpm_name
                                       or b["source"] == "dpkg" and _dpkg_owns(proot, b["where"], path)):
             return b
@@ -419,7 +431,7 @@ def _owner(proot, path, builds, rpm_name, module="php"):
         return None
     header = f"{prefix}/include/php/main/php_version.h"
     try:
-        if _root_owned(_at(proot, path)) and _root_owned(_at(proot, header)):
+        if _root_owned(proot, path) and _root_owned(proot, header):
             m = _PHP_VERSION_H.search(_slurp(proot, header).decode("utf-8", "replace"))
             return _upstream("source", m.group(1), prefix) if m else None
     except OSError:

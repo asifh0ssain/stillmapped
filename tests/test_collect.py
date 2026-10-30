@@ -318,6 +318,11 @@ class TestDocker(unittest.TestCase):
 
 
 class TestFilesystemSources(unittest.TestCase):
+    def setUp(self):  # temp dirs are not root-owned; the evidence rule has its own tests
+        p = patch.object(c, "_root_owned", return_value=True)
+        p.start()
+        self.addCleanup(p.stop)
+
     def test_homebrew(self):
         root = tempfile.mkdtemp()
         for d in ("php/8.5.12_1", "php@8.2/8.2.34", "phpunit/8.5.12", "phpstan/2.1.0"):
@@ -1186,3 +1191,66 @@ class TestReview3(unittest.TestCase):
         os.makedirs(os.path.join(d, "task/70"))
         r, code = self.scan(host)
         self.assertEqual(r["problems"], [])
+
+
+def as_root(owned_by_user=(), writable=()):
+    """Patch lstat/stat so every path reads as root-owned 0755, except paths
+    ending in owned_by_user (uid 1000) or writable (mode 0777). Symlinks stay real."""
+    real_lstat, real_stat = os.lstat, os.stat
+
+    def fake(real):
+        def f(p, *a, **k):
+            st = real(p, *a, **k)
+            mode = (st.st_mode & ~0o7777) | (0o777 if str(p).endswith(writable or "\0") else 0o755)
+            uid = 1000 if str(p).endswith(owned_by_user or "\0") else 0
+            return os.stat_result((mode, st.st_ino, st.st_dev, st.st_nlink, uid) + tuple(st)[5:])
+        return f
+    return patch.multiple(c.os, lstat=fake(real_lstat), stat=fake(real_stat))
+
+
+class TestEvidenceRule(unittest.TestCase):
+    """THREAT_MODEL.md: "fixed" needs evidence from root-owned sources only (review 3 #2, #3)."""
+
+    def test_root_owned_chain(self):
+        root = tempfile.mkdtemp()
+        write(root, "opt/app/include/php/main/php_version.h", "x")
+        h = "/opt/app/include/php/main/php_version.h"
+        with as_root():
+            self.assertTrue(c._root_owned(root, h))
+        with as_root(owned_by_user=("/opt/app",)):
+            self.assertFalse(c._root_owned(root, h))  # a user-owned directory on the way
+        with as_root(writable=("/include",)):
+            self.assertFalse(c._root_owned(root, h))  # group- or world-writable
+        os.rename(os.path.join(root, "opt/app/include"), os.path.join(root, "opt/app/inc2"))
+        os.symlink("inc2", os.path.join(root, "opt/app/include"))
+        with as_root():
+            self.assertFalse(c._root_owned(root, h))  # reached through a symlink
+
+    def test_user_owned_homebrew_cellar_is_not_evidence(self):
+        # #3: any binary under a user's Cellar/php/8.3.36 read FIXED 8.3.36, exit 0.
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, "opt/homebrew/Cellar/php/8.3.36/sbin"))
+        with as_root(owned_by_user=("/opt/homebrew",)):
+            builds, problems = c.from_homebrew(root)
+        self.assertEqual((builds, len(problems)), ([], 1))
+
+    def test_symlinked_source_header_is_not_evidence(self):
+        # #2: a deploy user pointed include/ at another build's 8.3.36 header; FIXED, exit 0.
+        root = tempfile.mkdtemp()
+        write(root, "usr/local/src/php-8.3.36/main/php_version.h", '#define PHP_VERSION "8.3.36"\n')
+        os.makedirs(os.path.join(root, "opt/app/include/php"))
+        os.symlink("/usr/local/src/php-8.3.36/main", os.path.join(root, "opt/app/include/php/main"))
+        fake_proc(root, 17, "/opt/app/bin/php")
+        with as_root(), patch.object(c, "_which", return_value=None):
+            workers, extra, problems, _ = c.running_workers(root, [], fake_runner({}))
+        self.assertEqual((workers, extra), ([], []))
+        self.assertTrue(any("pid 17" in p for p in problems))
+
+    def test_user_owned_directadmin_header_is_not_evidence(self):
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, "usr/local/directadmin"))
+        write(root, "usr/local/php83/bin/php", "")
+        write(root, "usr/local/php83/include/php/main/php_version.h", '#define PHP_VERSION "8.3.36"\n')
+        with as_root(owned_by_user=("/usr/local/php83",)):
+            builds, problems = c.from_directadmin(root)
+        self.assertEqual((builds, len(problems)), ([], 1))
