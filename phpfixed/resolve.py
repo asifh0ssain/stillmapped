@@ -147,19 +147,23 @@ def resolve_mapping(m, cve, records):
     return one if m["same"] else {**one, "status": RESTART, "reason": "in-memory version unknown, restart needed"}
 
 
-def resolve(inventory, records, cves):
+def resolve(inventory, records, cves, strict=True):
+    """strict (CVEs named): a module with no build is a problem; else only when no module has one."""
     module = {r["cve"]: r["module"] for r in records}
     builds = inventory["builds"]
     results = [resolve_one(b, cve, records) for b in builds for cve in cves if b["module"] == module.get(cve)]
     results += [r for m in inventory.get("mappings", []) for cve in cves if (r := resolve_mapping(m, cve, records))]
-    problems = list(inventory.get("problems", []))
-    for mod in sorted({module[c] for c in cves if c in module}):
-        if not any(b["module"] == mod for b in builds):
-            problems.append(f"no {'PHP' if mod == 'php' else mod} build found")
+    problems, info = list(inventory.get("problems", [])), []
+    # Only the host's own builds count: a container must not change the host's result.
+    absent = (mods := {module[c] for c in cves if c in module}) - {b["module"] for b in builds if b["db"] == "host"}
+    for mod in sorted(absent):
+        name, bad = "PHP" if mod == "php" else mod, strict or absent == mods
+        (problems if bad else info).append(f"no {name} build found")
     limits = [f"{f}: every mapped {f.split('.so')[0]}*.so* file is checked; a copy linked statically "
               "into a program is not seen" for f in sorted({r["file"] for r in records if r["cve"] in cves and r.get("file")})]
+    limits += ["PHP that no package owns is seen only while running as php, php-fpm, php-cgi, lsphp or frankenphp, or with libphp loaded."] * ("php" in mods)  # review 5 F1, F2
     stale = [w for w in inventory["workers"] if w["stale"]]
-    return {"results": results, "stale_workers": stale, "problems": problems, "limits": limits}
+    return {"results": results, "stale_workers": stale, "problems": problems, "info": info, "limits": limits}
 
 
 def exit_code(report):

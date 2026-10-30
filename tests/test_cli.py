@@ -33,7 +33,7 @@ class TestCli(unittest.TestCase):
         self.assertEqual(json.loads(out)["results"][0]["status"], "fixed")
 
     def test_table_escapes_control_characters(self):
-        code, out, _ = run("--cve", "CVE-2026-109618")
+        code, out, _ = run("--cve", "CVE-2026-109618", "--all")
         self.assertEqual(code, 0)
         self.assertNotIn("\x1b", out)
         self.assertIn("\\x1b", out)
@@ -69,6 +69,96 @@ class TestCli(unittest.TestCase):
         j = json.loads(jout)
         self.assertIn("linked statically into a program is not seen", j["limits"][0])
         self.assertEqual([r["status"] for r in j["results"]], ["fixed", "restart-needed"])
+
+
+OSSL_REC = {"cve": "CVE-TEST-0002", "module": "openssl", "vendor": "debian", "stream": "12",
+            "package": "libssl3", "branch": "3.0", "file": "libcrypto.so.3", "match": "vercmp-deb",
+            "fixed": "3.0.14-1~deb12u2", "status": "fixed", "origin": r"^3\.0\.\d+-\d+~deb12u\d+$",
+            "evidence_url": "https://example.invalid/dsa", "checked": "2026-10-29"}
+NO_PHP = {"os": {"id": "debian", "stream": "12"}, "workers": [], "mappings": [], "problems": [],
+          "builds": [{"source": "dpkg", "vendor": "debian", "stream": "12", "package": "libssl3",
+                      "branch": "3.0", "version": "3.0.14-1~deb12u2", "scheme": "vercmp-deb",
+                      "where": "libssl3", "module": "openssl", "db": "host"}]}
+
+
+class TestReleasePush(unittest.TestCase):
+    def run_no_php(self, *argv):
+        from phpfixed.resolve import load_records
+        with patch.object(cli, "load_records", return_value=load_records() + [OSSL_REC]):
+            return run(*argv, inv=NO_PHP)
+
+    def test_default_run_missing_module_is_info_and_exit_0(self):
+        # Release push #1: a host without PHP reaches exit 0 for OpenSSL CVEs.
+        code, out, _ = self.run_no_php()
+        jcode, jout, _ = self.run_no_php("--json")
+        self.assertEqual((code, jcode), (0, 0))
+        self.assertIn("[INFO] no PHP build found", out)
+        self.assertNotIn("[NOT FULLY CHECKED]", out)
+        self.assertEqual((json.loads(jout)["problems"], json.loads(jout)["info"]),
+                         ([], ["no PHP build found"]))
+
+    def test_missing_php_states_what_is_not_seen(self):
+        # Review 5 F1, F2 (owner's option b): exit 0 without PHP says what the scan cannot see.
+        code, out, _ = self.run_no_php()
+        jcode, jout, _ = self.run_no_php("--json")
+        self.assertEqual((code, jcode), (0, 0))
+        self.assertIn("[SCOPE] PHP that no package owns is seen only while running as php, php-fpm, php-cgi, lsphp or frankenphp, or with libphp loaded.", out)
+        self.assertIn("PHP that no package owns is seen only while running as php, php-fpm, php-cgi, lsphp or frankenphp, or with libphp loaded.", json.loads(jout)["limits"])
+        self.assertNotIn("not present", out)
+        # Review 6 F2: present with a PHP build, absent when only non-PHP CVEs are named.
+        self.assertIn("PHP that no package owns is seen only while running as php, php-fpm, php-cgi, lsphp or frankenphp, or with libphp loaded.", json.loads(run("--json")[1])["limits"])
+        only_ossl = json.loads(self.run_no_php("--cve", "CVE-TEST-0002", "--json")[1])["limits"]
+        self.assertNotIn("PHP that no package owns is seen only while running as php, php-fpm, php-cgi, lsphp or frankenphp, or with libphp loaded.", only_ossl)
+
+    def test_cve_for_missing_module_stays_a_problem(self):
+        # Release push #1: --cve for a module with no build is still exit 2.
+        code, out, _ = self.run_no_php("--cve", "CVE-2026-109618")
+        self.assertEqual(code, 2)
+        self.assertIn("no PHP build found", out)
+
+    def test_default_run_with_no_module_found_is_still_a_problem(self):
+        # Fail closed: nothing found at all (e.g. an unsupported package manager) is never exit 0.
+        code, out, _ = run(inv={**NO_PHP, "builds": []})
+        self.assertEqual(code, 2)
+        self.assertIn("no PHP build found", out)
+
+    def test_container_build_does_not_make_a_module_present(self):
+        # Review 5 F3: only a container's libssl3 made the host's empty check pass with exit 0.
+        from phpfixed.resolve import load_records
+        inv = {**NO_PHP, "builds": [{**NO_PHP["builds"][0], "db": "container"}]}
+        with patch.object(cli, "load_records", return_value=load_records() + [OSSL_REC]):
+            code, out, _ = run(inv=inv)
+        self.assertEqual(code, 2)
+        self.assertIn("no PHP build found", out)
+        self.assertNotIn("[INFO]", out)
+
+    def test_cve_flags_make_every_named_module_required(self):
+        # Review 5 F6: an OpenSSL CVE named next to a PHP CVE must not lift the PHP requirement.
+        code, out, _ = self.run_no_php("--cve", "CVE-2026-109618", "--cve", "CVE-TEST-0002")
+        self.assertEqual(code, 2)
+        self.assertIn("no PHP build found", out)
+
+    def test_default_output_shows_not_fixed_and_unknown(self):
+        # Review 5 F6: only fixed rows are hidden.
+        from phpfixed.resolve import load_records
+        old = {**NO_PHP["builds"][0], "version": "3.0.14-1~deb12u1"}
+        odd = {**NO_PHP["builds"][0], "version": "3.0.15-1+thirdparty1"}
+        with patch.object(cli, "load_records", return_value=load_records() + [OSSL_REC]):
+            code, out, _ = run(inv={**NO_PHP, "builds": [old, odd]})
+        self.assertEqual(code, 1)
+        self.assertIn("[NOT-FIXED] CVE-TEST-0002  debian/libssl3 3.0.14-1~deb12u1", out)
+        self.assertIn("[UNKNOWN] CVE-TEST-0002  debian/libssl3 3.0.15-1+thirdparty1", out)
+        self.assertIn("\n0 fixed\n", out)
+
+    def test_default_output_hides_fixed_and_counts_them(self):
+        # Release push #2: fixed rows are a count; --all lists them; JSON keeps them.
+        code, out, _ = self.run_no_php()
+        _, all_out, _ = self.run_no_php("--all")
+        _, jout, _ = self.run_no_php("--json")
+        self.assertNotIn("[FIXED]", out)
+        self.assertIn("\n1 fixed\n", out)
+        self.assertIn("[FIXED] CVE-TEST-0002  debian/libssl3", all_out)
+        self.assertEqual([r["status"] for r in json.loads(jout)["results"]], ["fixed"])
 
 
 if __name__ == "__main__":
