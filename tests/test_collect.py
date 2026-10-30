@@ -346,7 +346,7 @@ class TestFilesystemSources(unittest.TestCase):
         self.assertIn("php74", problems[0])
 
 
-def fake_proc(root, pid, exe=None, maps=(), proot=None, old=b"old code", userns="user:[4026531837]"):
+def fake_proc(root, pid, exe=None, maps=(), proot=None, old=b"old code", userns="user:[4026531837]", mntns=None):
     """A /proc/PID entry; proot is the process's root filesystem (a container's).
 
     exe and each path in maps get a maps line and a map_files entry. A
@@ -357,10 +357,12 @@ def fake_proc(root, pid, exe=None, maps=(), proot=None, old=b"old code", userns=
     os.makedirs(os.path.join(d, "map_files"))
     os.symlink(proot, os.path.join(d, "root"))
     os.makedirs(os.path.join(d, "ns"))
-    os.symlink(userns, os.path.join(d, "ns/user"))
+    os.symlink(userns, os.path.join(d, "ns/user"))  # a container gets its own mount namespace
+    os.symlink(mntns or ("mnt:[4026531841]" if proot == root else f"mnt:[{4026532000 + pid}]"), os.path.join(d, "ns/mnt"))
     if not os.path.lexists(os.path.join(root, "proc/self/ns/user")):  # the scanner's own
         os.makedirs(os.path.join(root, "proc/self/ns"), exist_ok=True)
         os.symlink("user:[4026531837]", os.path.join(root, "proc/self/ns/user"))
+        os.symlink("mnt:[4026531841]", os.path.join(root, "proc/self/ns/mnt"))
     write(root, f"proc/{pid}/stat", f"{pid} (a) b) S {'0 ' * 18}4242 0\n")  # ')' in the name too
     lines = []
     if exe:
@@ -1118,3 +1120,13 @@ class TestReview2(unittest.TestCase):
         tracemalloc.stop()
         self.assertEqual([x["status"] for x in r["results"] if x.get("mapping")], ["fixed"])
         self.assertLess(peak, 5 << 20)
+
+    def test_chrooted_process_reports_chroot(self):
+        # #8: postfix-style chroot (same mounts, other root) was "bundled copy, not owned by a package".
+        host = TestLibraries.host(None)
+        jail = tempfile.mkdtemp()
+        fake_proc(host, 2468, "/usr/lib/postfix/sbin/smtpd", maps=[LIB], proot=jail, mntns="mnt:[4026531841]")
+        r, code = self.scan(host)
+        self.assertIn(f"pid 2468 runs {LIB} as a chrooted process; it can't be traced", r["problems"])
+        self.assertFalse(any("bundled copy" in p for p in r["problems"]))
+        self.assertEqual(code, 2)

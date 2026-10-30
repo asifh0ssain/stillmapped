@@ -71,12 +71,11 @@ def run(cmd, ok=(0,)):
 def os_release(root="/"):
     """(id, stream) from /etc/os-release, e.g. ('ubuntu', '24.04'), ('rhel', '9')."""
     text = ""
-    for name in ("/etc/os-release", "/usr/lib/os-release"):
+    for name in ("/usr/lib/os-release", "/etc/os-release"):  # /etc wins when both exist
         try:
             text = _slurp(root, name).decode("utf-8", "replace")
-            break
         except OSError:
-            continue
+            pass
     info = {k: v.strip().strip('"') for k, _, v in (line.strip().partition("=") for line in text.splitlines())}
     osid, ver = info.get("ID", ""), info.get("VERSION_ID", "")
     # Ubuntu and SUSE track fixes per X.Y (24.04, 15.7); Debian and the
@@ -447,9 +446,9 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
     use_rpm = any(b["source"] == "rpm" for b in builds)
     owners, indexes, workers, mappings, extra, unreadable = {}, {}, [], [], [], 0
     try:
-        userns = os.readlink(os.path.join(proc, "self/ns/user"))
+        own = [os.readlink(os.path.join(proc, "self/ns", n)) for n in ("user", "mnt")]
     except OSError:
-        userns = None
+        own = [None, None]
     for pid in sorted((p for p in os.listdir(proc) if p.isdigit()), key=int):
         proot = os.path.join(proc, pid, "root")
         try:
@@ -460,9 +459,7 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
         try:
             start = _read(d, "stat").rsplit(")", 1)[1].split()[19]
             exe = os.readlink("exe", dir_fd=d)
-            # In another user namespace (unshare -U, rootless Docker or Podman) a
-            # plain user owns the root and can write its package database.
-            foreign = os.readlink("ns/user", dir_fd=d) != userns
+            ns = [os.readlink(f"ns/{n}", dir_fd=d) for n in ("user", "mnt")]
             with open(os.open("maps", os.O_RDONLY, dir_fd=d), encoding="utf-8", errors="replace") as fh:
                 maps = [m for m in (line.rstrip("\n").split(None, 5) for line in fh) if len(m) == 6 and m[5][:1] == "/"
                         and (m[5] == exe or _PHP_MODULE.search(m[5]) or _lib_file(m[5], files))]  # streamed
@@ -472,11 +469,16 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
                 subjects[None, None, php] = None
             st = os.stat(proot) if subjects else None
             for (_, _, mapped), line in subjects.items():
-                if foreign:
-                    notes.append(f"pid {pid} runs {mapped} in another user namespace; its packages can't be trusted")
-                    continue
                 key, path = (st.st_dev, st.st_ino), mapped.removesuffix(" (deleted)")
                 in_container = key != host
+                # In another user namespace (unshare -U, rootless Docker or Podman) a plain
+                # user owns the root and its packages. A chroot keeps our mounts, so its
+                # maps paths are not paths inside its root.
+                why = ("in another user namespace; its packages can't be trusted" if ns[0] != own[0] else
+                       "as a chrooted process; it can't be traced" if in_container and ns[1] == own[1] else None)
+                if why:
+                    notes.append(f"pid {pid} runs {mapped} {why}")
+                    continue
                 module = "php" if mapped == php else files[_lib_file(path, files)]
                 if key not in by_root:  # rpm can't read a container's database; dpkg's is a file
                     found, issues = from_dpkg(os_release(proot), proot, libs)
