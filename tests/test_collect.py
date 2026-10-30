@@ -687,7 +687,8 @@ class TestLibraries(unittest.TestCase):
     def test_symlink_loop_in_root_is_untraced(self):
         root = self.host(lst="/lib/x86_64-linux-gnu/libcrypto.so.3")
         os.symlink("lib", os.path.join(root, "lib"))
-        self.assertIsNone(c._in_root(root, "/lib/x86_64-linux-gnu/libcrypto.so.3"))
+        with self.assertRaises(OSError):
+            c._in_root(root, "/lib/x86_64-linux-gnu/libcrypto.so.3")
 
     def test_absolute_symlink_stays_inside_process_root(self):
         box = tempfile.mkdtemp()
@@ -1130,3 +1131,31 @@ class TestReview2(unittest.TestCase):
         self.assertIn(f"pid 2468 runs {LIB} as a chrooted process; it can't be traced", r["problems"])
         self.assertFalse(any("bundled copy" in p for p in r["problems"]))
         self.assertEqual(code, 2)
+
+    def test_identity_check_resolves_inside_the_container(self):
+        # #10: os.stat followed a container's absolute symlink to the scanner's own file, so the
+        # inode check matched the mapped (vulnerable) file while md5 checked a pristine copy.
+        host = tempfile.mkdtemp()
+        v = os.path.join(tempfile.mkdtemp(), "v.so")  # outside every root: what the process maps
+        with open(v, "wb") as fh:
+            fh.write(b"vulnerable bytes")
+        box = TestLibraries.host(None)
+        write(box, v.lstrip("/"), INSTALLED.decode())  # pristine copy at the same path inside the box
+        os.makedirs(os.path.dirname(os.path.join(box, LIB.lstrip("/"))), exist_ok=True)
+        os.symlink(v, os.path.join(box, LIB.lstrip("/")))
+        d = fake_proc(host, 100, "/usr/bin/openssl", proot=box)
+        st = os.stat(v)
+        write(host, "proc/100/maps", f"7f000000-7f001000 r-xp 00000000 {os.major(st.st_dev):02x}:"
+                                      f"{os.minor(st.st_dev):02x} {st.st_ino}   {LIB} (deleted)\n")
+        with open(os.path.join(d, "map_files/7f000000-7f001000"), "wb") as fh:
+            fh.write(b"vulnerable bytes")
+        r, code = self.scan(host)
+        self.assertEqual([x["status"] for x in r["results"] if x.get("mapping")], ["restart-needed"])
+        self.assertEqual(code, 1)
+
+    def test_symlink_swapped_in_after_resolving_is_refused(self):
+        box = tempfile.mkdtemp()
+        write(box, "real", "x")
+        os.symlink(os.path.join(box, "real"), os.path.join(box, "link"))
+        with patch.object(c, "_in_root", return_value="/link"), self.assertRaises(OSError):
+            c._slurp(box, "/anything")

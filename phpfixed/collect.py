@@ -268,10 +268,8 @@ def _slurp(root, path, d=None):
     root (or relative to the directory fd d). Opened without blocking and
     read only up to its size, at most MAX_READ: a FIFO, a device or
     /proc/kmsg planted by a container can't block, flood or drain the scan."""
-    real = path if d is not None else _in_root(root, path)
-    if real is None:
-        raise OSError(f"symlink loop: {path}")
-    fd = os.open(os.path.join(root, real.lstrip("/")), os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY, dir_fd=d)
+    flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY | (0 if d is not None else os.O_NOFOLLOW)
+    fd = os.open(path if d is not None else _at(root, path), flags, dir_fd=d)  # map_files entries are links
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_READ:
@@ -287,11 +285,11 @@ def _same_code(d, line, proot, path):
     mapped object (/proc/PID/map_files) and the installed file; False when
     they differ or the installed file is gone; None when it can't tell."""
     try:
-        st = os.stat(os.path.join(proot, path.lstrip("/")))
+        st = os.stat(_at(proot, path))
     except FileNotFoundError:
         return False, {"why": "installed file is gone"}
     except OSError as e:
-        return None, {"why": e.strerror}
+        return None, {"why": e.strerror or str(e)}
     if f"{os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x}" == line[3] and str(st.st_ino) == line[4]:
         return True, {}
     rng = "-".join(a.lstrip("0") or "0" for a in line[0].split("-"))  # map_files drops zero padding
@@ -323,7 +321,7 @@ def _dpkg_list(root, pkg, ext="list"):
 
 def _in_root(proot, path):
     """path with each symlink resolved inside proot, as the process sees it
-    (/lib -> usr/lib on merged-/usr systems). None on a symlink loop."""
+    (/lib -> usr/lib on merged-/usr systems). OSError on a symlink loop."""
     parts, done, hops = path.split("/"), "", 0
     while parts:
         part = parts.pop(0)
@@ -337,10 +335,14 @@ def _in_root(proot, path):
                 continue
             hops += 1
             if hops > 40:
-                return None
+                raise OSError(f"symlink loop in {path}")
             parts = target.split("/") + parts
             done = "" if target.startswith("/") else done
     return done or "/"
+
+
+def _at(root, path):  # the scanner's path to path inside root, symlinks resolved in root
+    return os.path.join(root, _in_root(root, path).lstrip("/"))
 
 
 def _dpkg_owns(proot, pkg, path):
@@ -349,7 +351,7 @@ def _dpkg_owns(proot, pkg, path):
     return next((f for f in _dpkg_list(proot, pkg)
                  # resolve the directories only: a packaged path now a symlink owns nothing else
                  if f == path or os.path.basename(f) == name
-                 and f"{(_in_root(proot, os.path.dirname(f)) or chr(0)).rstrip('/')}/{name}" == path), None)
+                 and f"{_in_root(proot, os.path.dirname(f)).rstrip('/')}/{name}" == path), None)
 
 
 def _tampered(proot, b, path, runner):
@@ -390,7 +392,7 @@ def _dpkg_owner(proot, path, index):
         index[None], dirs = None, {}
         for pkg in (os.path.basename(f)[:-5] for f in glob.glob(os.path.join(proot, "var/lib/dpkg/info/*.list"))):
             for f in (f for f in _dpkg_list(proot, pkg) if ".so" in os.path.basename(f)):
-                d = dirs.setdefault(os.path.dirname(f), _in_root(proot, os.path.dirname(f)) or "\0")
+                d = dirs.setdefault(os.path.dirname(f), _in_root(proot, os.path.dirname(f)))
                 index[f"{d.rstrip('/')}/{os.path.basename(f)}"] = pkg
     return index.get(path)
 
@@ -417,7 +419,7 @@ def _owner(proot, path, builds, rpm_name, module="php"):
         return None
     header = f"{prefix}/include/php/main/php_version.h"
     try:
-        if _root_owned(os.path.join(proot, path.lstrip("/"))) and _root_owned(os.path.join(proot, header.lstrip("/"))):
+        if _root_owned(_at(proot, path)) and _root_owned(_at(proot, header)):
             m = _PHP_VERSION_H.search(_slurp(proot, header).decode("utf-8", "replace"))
             return _upstream("source", m.group(1), prefix) if m else None
     except OSError:
