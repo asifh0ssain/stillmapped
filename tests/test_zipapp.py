@@ -19,7 +19,7 @@ class TestZipapp(unittest.TestCase):
             with open(app, "rb") as fh:
                 self.assertEqual(fh.readline(), b"#!/usr/bin/python3\n")
             names = zipfile.ZipFile(app).namelist()
-            self.assertIn("stillmapped/data/php2shell.json", names)
+            self.assertIn("stillmapped/data/CVE-2026-109618.json", names)
             self.assertFalse([n for n in names if "__pycache__" in n or n.endswith(".pyc")])
             # Review 5 F5: the same tree gives the same bytes, so anyone can rebuild and compare.
             again = subprocess.run([os.path.join(REPO, "ci", "zipapp.sh"), os.path.join(d, "again")],

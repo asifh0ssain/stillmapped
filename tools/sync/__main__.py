@@ -2,7 +2,7 @@
 
   python3 -m tools.sync fetch            network: new snapshot under tools/sync/snapshots/
   python3 -m tools.sync build SNAPSHOT   offline: records to tools/sync/out/, plus skipped.tsv
-  python3 -m tools.sync oracle           compare tools/sync/out/ with stillmapped/data/php2shell.json
+  python3 -m tools.sync oracle           compare tools/sync/out/ with tools/sync/hand/php2shell.json (the hand-checked records)
 """
 
 import datetime
@@ -30,7 +30,7 @@ def main(argv):
         write(run(Snapshot(rest[0])), OUT)
         print(OUT)
     elif cmd == "oracle" and not rest:
-        diffs, extras = oracle(OUT, os.path.join(HERE, "..", "..", "stillmapped", "data", "php2shell.json"))
+        diffs, extras = oracle(OUT, os.path.join(HERE, "hand", "php2shell.json"))
         for line in [f"extra: {e}" for e in extras] + [f"DIFF: {d}" for d in diffs]:
             print(line)
         print(f"oracle: {len(diffs)} difference(s)" if diffs else "oracle: all hand records reproduced")

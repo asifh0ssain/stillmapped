@@ -210,9 +210,11 @@ class TestBundledData(unittest.TestCase):
         rec = {**RECORDS[0], "origin": r"^8\.3\.6-0ubuntu0\.24\.04\.\d+|.*$"}
         self.assertIn("distro record needs an origin pattern anchored with ^ and $, without |", validate_record(rec))
 
-    def test_both_cves_present(self):
-        cves = {r["cve"] for r in load_records()}
-        self.assertEqual(cves, {"CVE-2026-109618", "CVE-2026-109619"})
+    def test_bundled_data_covers_the_hand_cves_without_duplicates(self):
+        records = load_records()
+        self.assertLessEqual({"CVE-2026-109618", "CVE-2026-109619"}, {r["cve"] for r in records})
+        keys = [(r["cve"], r["vendor"], r["stream"], r["package"], r["branch"]) for r in records]
+        self.assertEqual(len(keys), len(set(keys)))
 
 
 class TestExitCode(unittest.TestCase):

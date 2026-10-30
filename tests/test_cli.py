@@ -12,6 +12,10 @@ INV = {"os": {"id": "ubuntu", "stream": "24.04"}, "workers": [], "problems": [],
                    "where": "php8.3-fpm\x1b]0;owned\x07", "module": "php", "db": "host"}]}
 
 
+# The PHP CVEs these tests were written against; the rest of the bundled data is left out.
+HAND_CVES = ["CVE-2026-109618", "CVE-2026-109619"]
+
+
 def run(*argv, inv=INV):
     out, err = io.StringIO(), io.StringIO()
     with patch.object(cli, "collect", return_value=inv), \
@@ -56,7 +60,7 @@ class TestCli(unittest.TestCase):
              "file": "libcrypto.so.3", "dev": "00:3f", "inode": "14821", "same": False, "build": lib,
              "mapped_sha256": "2744", "installed_sha256": "cf0a"}
         inv = {"os": {"id": "debian", "stream": "12"}, "builds": [lib], "workers": [], "mappings": [m], "problems": []}
-        with patch.object(cli, "load_records", return_value=load_records() + [rec]):
+        with patch.object(cli, "load_records", return_value=load_records(HAND_CVES) + [rec]):
             code, out, _ = run("--cve", "CVE-TEST-0002", inv=inv)
             jcode, jout, _ = run("--cve", "CVE-TEST-0002", "--json", inv=inv)
         self.assertEqual((code, jcode), (1, 1))
@@ -84,7 +88,7 @@ NO_PHP = {"os": {"id": "debian", "stream": "12"}, "workers": [], "mappings": [],
 class TestReleasePush(unittest.TestCase):
     def run_no_php(self, *argv):
         from stillmapped.resolve import load_records
-        with patch.object(cli, "load_records", return_value=load_records() + [OSSL_REC]):
+        with patch.object(cli, "load_records", return_value=load_records(HAND_CVES) + [OSSL_REC]):
             return run(*argv, inv=NO_PHP)
 
     def test_default_run_missing_module_is_info_and_exit_0(self):
@@ -126,7 +130,7 @@ class TestReleasePush(unittest.TestCase):
         # Review 5 F3: only a container's libssl3 made the host's empty check pass with exit 0.
         from stillmapped.resolve import load_records
         inv = {**NO_PHP, "builds": [{**NO_PHP["builds"][0], "db": "container"}]}
-        with patch.object(cli, "load_records", return_value=load_records() + [OSSL_REC]):
+        with patch.object(cli, "load_records", return_value=load_records(HAND_CVES) + [OSSL_REC]):
             code, out, _ = run(inv=inv)
         self.assertEqual(code, 2)
         self.assertIn("no PHP build found", out)
@@ -143,7 +147,7 @@ class TestReleasePush(unittest.TestCase):
         from stillmapped.resolve import load_records
         old = {**NO_PHP["builds"][0], "version": "3.0.14-1~deb12u1"}
         odd = {**NO_PHP["builds"][0], "version": "3.0.15-1+thirdparty1"}
-        with patch.object(cli, "load_records", return_value=load_records() + [OSSL_REC]):
+        with patch.object(cli, "load_records", return_value=load_records(HAND_CVES) + [OSSL_REC]):
             code, out, _ = run(inv={**NO_PHP, "builds": [old, odd]})
         self.assertEqual(code, 1)
         self.assertIn("[NOT-FIXED] CVE-TEST-0002  debian/libssl3 3.0.14-1~deb12u1", out)
