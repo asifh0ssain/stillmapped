@@ -323,15 +323,6 @@ class TestFilesystemSources(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
-    def test_homebrew(self):
-        root = tempfile.mkdtemp()
-        for d in ("php/8.5.12_1", "php@8.2/8.2.34", "phpunit/8.5.12", "phpstan/2.1.0"):
-            os.makedirs(os.path.join(root, "opt/homebrew/Cellar", d))
-        builds, _ = c.from_homebrew(root)
-        # Audit: phpunit 8.5.12 used to be read as PHP 8.5.12.
-        self.assertEqual({(b["vendor"], b["branch"], b["version"]) for b in builds},
-                         {("upstream", "8.5", "8.5.12"), ("upstream", "8.2", "8.2.34")})
-
     def test_directadmin_requires_marker(self):
         self.assertEqual(c.from_directadmin(tempfile.mkdtemp()), ([], []))
 
@@ -1226,13 +1217,16 @@ class TestEvidenceRule(unittest.TestCase):
         with as_root():
             self.assertFalse(c._root_owned(root, h))  # reached through a symlink
 
-    def test_user_owned_homebrew_cellar_is_not_evidence(self):
-        # #3: any binary under a user's Cellar/php/8.3.36 read FIXED 8.3.36, exit 0.
+    def test_running_homebrew_php_is_untraced(self):
+        # #3: a Cellar directory's name was the version; any binary under Cellar/php/8.3.36 read
+        # FIXED, exit 0. Homebrew is no longer read, even when its Cellar is root-owned.
         root = tempfile.mkdtemp()
         os.makedirs(os.path.join(root, "opt/homebrew/Cellar/php/8.3.36/sbin"))
-        with as_root(owned_by_user=("/opt/homebrew",)):
-            builds, problems = c.from_homebrew(root)
-        self.assertEqual((builds, len(problems)), ([], 1))
+        fake_proc(root, 18, "/opt/homebrew/Cellar/php/8.3.36/sbin/php-fpm")
+        with as_root(), patch.object(c, "_which", return_value=None):
+            inv = c.collect(root, fake_runner({}))
+        self.assertEqual(inv["builds"], [])
+        self.assertTrue(any(p.startswith("pid 18 runs /opt/homebrew/") for p in inv["problems"]))
 
     def test_symlinked_source_header_is_not_evidence(self):
         # #2: a deploy user pointed include/ at another build's 8.3.36 header; FIXED, exit 0.

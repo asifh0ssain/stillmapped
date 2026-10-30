@@ -1,8 +1,9 @@
 """Find PHP builds installed on this host.
 
 Read-only. Reads dpkg's status database, queries rpm and the local Docker
-daemon's image metadata, and reads Homebrew's Cellar, DirectAdmin's installed
-headers and /proc for running PHP workers. Never modifies anything, never
+daemon's image metadata, and reads DirectAdmin's installed headers and /proc
+for running PHP and libcrypto. Homebrew is not read: its Cellar is user-owned,
+so its version is not evidence (THREAT_MODEL.md). Never modifies anything, never
 touches the network, never executes a binary found on disk.
 
 Every collector returns (builds, problems). A problem is anything that kept
@@ -208,22 +209,6 @@ def from_docker(runner=run):
     except (ValueError, TypeError, AttributeError):
         return builds, ["unreadable docker image metadata; images not fully checked"]
     return builds, []
-
-
-def from_homebrew(root="/"):
-    """The version is the Cellar directory's name, so the Cellar must be
-    root-owned to count; Homebrew's usual user-owned prefix is not evidence."""
-    builds, problems = [], []
-    for cellar in ("opt/homebrew/Cellar", "usr/local/Cellar"):
-        for d in sorted(glob.glob(os.path.join(root, cellar, "php*", "*"))):
-            formula, version = d.split(os.sep)[-2:]
-            if not re.fullmatch(r"php(@\d+\.\d+)?", formula):  # not phpunit, phpstan...
-                continue
-            if _root_owned(root, d[len(root):]):
-                builds.append(_upstream("homebrew", re.sub(r"_\d+$", "", version), d))
-            else:
-                problems.append(f"{d} is not root-owned all the way down; not checked")
-    return builds, problems
 
 
 def from_directadmin(root="/"):
@@ -549,7 +534,7 @@ def collect(root="/", runner=run, libs={}, files={}):
     osr = os_release(root)
     builds, problems = [], []
     packages = (from_dpkg(osr, root, libs), from_rpm(osr, runner, libs))
-    for found, issues in (*packages, from_docker(runner), from_homebrew(root), from_directadmin(root)):
+    for found, issues in (*packages, from_docker(runner), from_directadmin(root)):
         builds += found
         problems += issues
     workers, extra, worker_problems, mappings = running_workers(root, builds, runner, libs, files)
@@ -559,7 +544,7 @@ def collect(root="/", runner=run, libs={}, files={}):
     if (from_dpkg(osr, root, libs), from_rpm(osr, runner, libs)) != packages:
         problems.append("packages changed during the scan; run it again")
     # Same package seen through several binaries (fpm, cli) is one build;
-    # the same version from Docker and Homebrew is two. Every place it was
+    # the same version from Docker and DirectAdmin is two. Every place it was
     # seen stays listed.
     unique = {}
     for b in builds + extra:
