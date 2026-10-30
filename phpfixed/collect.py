@@ -443,7 +443,7 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
             d = os.open(os.path.join(proc, pid), os.O_RDONLY | os.O_DIRECTORY)
         except OSError:
             continue
-        pw, pm, notes = [], [], []  # committed only if the process is still alive at the end
+        pw, pm, notes, exe = [], [], [], None  # committed only if the process is still alive at the end
         try:
             start = _read(d, "stat").rsplit(")", 1)[1].split()[19]
             exe = os.readlink("exe", dir_fd=d)
@@ -489,8 +489,13 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
         except PermissionError:
             unreadable += 1
             continue
-        except (OSError, IndexError):  # kernel thread (no exe) or process gone
-            continue
+        except (OSError, IndexError) as e:
+            try:  # skip a kernel thread (no exe) or a process that is gone; anything else is a problem
+                if exe is None or not _read(d, "stat"):
+                    continue
+            except OSError:
+                continue
+            pw, pm, notes = [], [], [f"pid {pid} runs {exe} and was not fully checked ({e})"]
         finally:
             os.close(d)
         problems, workers, mappings = problems + notes, workers + pw, mappings + pm

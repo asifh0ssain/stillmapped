@@ -712,7 +712,7 @@ class TestLibraries(unittest.TestCase):
 
         def read(d, name):
             calls.append(name)
-            if name == "stat" and calls.count("stat") == 2:
+            if name == "stat" and calls.count("stat") >= 2:  # gone, and stays gone
                 raise ProcessLookupError(3, "No such process")
             return real(d, name)
         with patch.object(c, "_read", side_effect=read):
@@ -1015,3 +1015,19 @@ class TestReview2(unittest.TestCase):
             r, code = self.scan(root, [rec], runner, {"openssl-libs": "openssl"})
         self.assertEqual([(x["status"], x["build"]["version"]) for x in r["results"] if x.get("mapping")],
                          [("not-fixed", "1:3.0.7-24.el9")])
+
+    def test_unexpected_read_error_is_a_problem_not_a_gone_process(self):
+        # #3: a container's diversions file as a directory made pid 100 vanish; exit 0.
+        host = TestLibraries.host(None)
+        fake_proc(host, 1, "/usr/sbin/sshd", maps=[LIB])
+        box = TestLibraries.host(None, version="3.0.14-1~deb12u1")
+        os.makedirs(os.path.join(box, "var/lib/dpkg/diversions"))
+        r, code = self.scan(self.container(box, host=host))
+        self.assertTrue(any(p.startswith("pid 100 runs /usr/bin/openssl and was not fully checked") for p in r["problems"]))
+        self.assertEqual(code, 2)
+
+    def test_kernel_thread_and_gone_process_are_skipped(self):
+        host = TestLibraries.host(None)
+        fake_proc(host, 2)  # kernel thread: no exe
+        r, code = self.scan(host)
+        self.assertEqual(r["problems"], [])
