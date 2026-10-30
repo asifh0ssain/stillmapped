@@ -22,8 +22,8 @@ def _table(inv, report):
         print("\nNo PHP builds found.")
     for r in report["results"]:
         b = r["build"]
-        print(f"\n[{r['status'].upper()}] {r['cve']}  {b['vendor']}/{_safe(b['package'])} {_safe(b['version'])}")
-        print(f"  from:   {b['source']}, {b['db']} package database ({_safe(b['where'])})")
+        print(f"\n[{r['status'].upper()}] {r['cve']}  {_safe(b['vendor'])}/{_safe(b['package'])} {_safe(b['version'])}")
+        print(f"  from:   {_safe(b['source'])}, {_safe(b['db'])} package database ({_safe(b['where'])})")
         if r.get("mapping"):
             print(f"  pid:    {r['mapping']['pid']} maps {_safe(r['mapping']['path'])}")
         print(f"  why:    {_safe(r['reason'])}")

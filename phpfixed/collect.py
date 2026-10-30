@@ -40,10 +40,9 @@ _PANEL = re.compile(r"^((?:ea|alt|plesk)-php\d\d)(?:-php)?(?:-(?:fpm|cli|common|
 _SURY = re.compile(r"deb\.sury\.org|\+0~\d{8}")
 _PHP_VERSION_H = re.compile(r'#define PHP_VERSION "([^"]+)"')
 
-# Processes that run PHP: PHP binaries (php8.3 CLI daemons too), and Apache
-# (apache2, httpd, SUSE's httpd-prefork) or NGINX Unit with a PHP module mapped.
+# Processes that run PHP: PHP binaries (php8.3 CLI daemons too), and any
+# process with a PHP module mapped (Apache, NGINX Unit, uWSGI's PHP plugin).
 _PHP_EXE = re.compile(r"(php-fpm|php-cgi|lsphp|php)[\d.]*$|frankenphp$")
-_EMBEDS = re.compile(r"(apache2|httpd)(-\w+)?$|unitd$")
 _PHP_MODULE = re.compile(r"/(libphp|mod_php)[^/]*\.so")
 # A file that is PHP itself. A package counts as a PHP build only if it
 # installs one: cPanel's ea-phpXX-runtime shares the build's name but not its code.
@@ -239,13 +238,11 @@ def from_directadmin(root="/"):
 
 def _php_path(exe, maps):
     """The PHP file a process runs ('(deleted)' kept): its own binary, or a
-    PHP module mapped into Apache or Unit. None if it runs no PHP."""
+    PHP module mapped into it. None if it runs no PHP."""
     name = os.path.basename(exe.removesuffix(" (deleted)"))
     if _PHP_EXE.match(name):
         return exe
-    if _EMBEDS.match(name):
-        return next((m[5] for m in maps if _PHP_MODULE.search(m[5])), None)
-    return None
+    return next((m[5] for m in maps if _PHP_MODULE.search(m[5])), None)
 
 
 def _lib_file(path, files):
@@ -344,7 +341,9 @@ def _dpkg_owns(proot, pkg, path):
     """The entry in pkg's file list that is path, or None."""
     name = os.path.basename(path)
     return next((f for f in _dpkg_list(proot, pkg)
-                 if f == path or os.path.basename(f) == name and _in_root(proot, f) == path), None)
+                 # resolve the directories only: a packaged path now a symlink owns nothing else
+                 if f == path or os.path.basename(f) == name
+                 and f"{(_in_root(proot, os.path.dirname(f)) or chr(0)).rstrip('/')}/{name}" == path), None)
 
 
 def _tampered(proot, b, path, runner):
@@ -444,11 +443,11 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
             maps = [m for m in (line.split(None, 5) for line in _read(d, "maps").splitlines())
                     if len(m) == 6 and m[5].startswith("/")]
             php = _php_path(exe, maps)
-            subjects = {m[5]: m for m in maps if _lib_file(m[5], files)}  # one per file
-            if php:
-                subjects[php] = next((m for m in maps if m[5] == php), None)
+            subjects = {tuple(m[3:]): m for m in maps if m[5] == php or _lib_file(m[5], files)}  # each inode
+            if php and php not in (k[2] for k in subjects):
+                subjects[None, None, php] = None
             st = os.stat(proot) if subjects else None
-            for mapped, line in subjects.items():
+            for (_, _, mapped), line in subjects.items():
                 key, path = (st.st_dev, st.st_ino), mapped.removesuffix(" (deleted)")
                 in_container = key != host
                 module = "php" if mapped == php else files[_lib_file(path, files)]

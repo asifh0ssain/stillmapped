@@ -841,3 +841,60 @@ class TestHostileFiles(unittest.TestCase):
                 fh.write(b'ID=debian\xff\nVERSION_ID="12"\n')
         inv = self.box_scan(prep)
         self.assertEqual([m["build"]["db"] for m in inv["mappings"]], ["container"])
+
+
+class TestReviewSmallFixes(unittest.TestCase):
+    """Review findings #5 to #8."""
+
+    def setUp(self):
+        for p in (patch.object(c, "_which", return_value=None), patch.object(c.os, "geteuid", return_value=0)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_container_os_release_id_is_escaped_in_table(self):
+        # #5: a container's ID could redraw a host [NOT-FIXED] line as [FIXED].
+        import contextlib
+        import io
+        from phpfixed import cli
+        root, box = TestLibraries.host(None, version="3.0.14-1~deb12u1"), TestLibraries.host(None)
+        write(box, "etc/os-release", 'ID="debian\x1b[3A\x1b[2K[FIXED]"\nVERSION_ID="12"\n')
+        fake_proc(root, 30, "/usr/bin/openssl", maps=[LIB], proot=box)
+        r = TestLibraries.report(None, root)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            cli._table({"os": {"id": "debian", "stream": "12"}}, r)
+        self.assertNotIn("\x1b", out.getvalue())
+
+    def test_every_inode_of_a_path_is_checked(self):
+        # #6: two deleted inodes, old code first and identical bytes second, read "fixed".
+        root = TestLibraries.host(None)
+        d = fake_proc(root, 40, "/usr/bin/openssl", maps=[LIB + " (deleted)", LIB + " (deleted)"])
+        rngs = sorted(os.listdir(os.path.join(d, "map_files")))
+        with open(os.path.join(d, "map_files", rngs[-1]), "wb") as fh:
+            fh.write(INSTALLED)
+        lines = open(os.path.join(d, "maps")).read().splitlines()
+        ino = int(lines[-1].split()[4])
+        lines[-1] = lines[-1].replace(f" {ino} ", f" {ino + 1} ")
+        write(root, "proc/40/maps", "\n".join(lines) + "\n")
+        got = sorted(r["status"] for r in TestLibraries.report(None, root)["results"] if r.get("mapping"))
+        self.assertEqual(got, ["fixed", "restart-needed"])
+
+    def test_packaged_path_now_a_symlink_owns_nothing_else(self):
+        # #7: the list's libcrypto.so.3 is a symlink to a vendor build; the vendor file isn't libssl3's.
+        root = TestLibraries.host(None)
+        # Same bytes as the package's copy, so only ownership decides (#2's md5 check passes).
+        write(root, "opt/vendor/lib/libcrypto.so.3", INSTALLED.decode())
+        os.makedirs(os.path.dirname(os.path.join(root, LIB.lstrip("/"))))
+        os.symlink("/opt/vendor/lib/libcrypto.so.3", os.path.join(root, LIB.lstrip("/")))
+        fake_proc(root, 50, "/usr/bin/openssl", maps=["/opt/vendor/lib/libcrypto.so.3"])
+        r = TestLibraries.report(None, root)
+        self.assertEqual([x for x in r["results"] if x.get("mapping")], [])
+        self.assertTrue(any("pid 50" in p for p in r["problems"]))
+
+    def test_php_module_in_any_process_is_a_worker(self):
+        # #8: uWSGI's PHP plugin mapping a stale libphp was not looked at.
+        root = ubuntu_host()
+        builds = c.from_dpkg(("ubuntu", "24.04"), root)[0]
+        fake_proc(root, 71, "/usr/bin/uwsgi-core", maps=["/usr/lib/apache2/modules/libphp8.3.so (deleted)"])
+        workers = c.running_workers(root, builds, fake_runner({}))[0]
+        self.assertEqual([(w["pid"], w["stale"]) for w in workers], [("71", True)])
