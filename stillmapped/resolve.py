@@ -73,7 +73,7 @@ def load_records(cves=None):
     a verdict.
     """
     records, module = [], {}
-    for f in sorted((resources.files("phpfixed") / "data").iterdir(), key=lambda p: p.name):
+    for f in sorted((resources.files("stillmapped") / "data").iterdir(), key=lambda p: p.name):
         if not f.name.endswith(".json"):
             continue
         doc = json.loads(f.read_text(encoding="utf-8"))

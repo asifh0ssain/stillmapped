@@ -1,4 +1,4 @@
-"""phpfixed command line. Read-only and offline."""
+"""stillmapped command line. Read-only and offline."""
 
 import argparse
 import json
@@ -17,7 +17,7 @@ def _safe(s):
 
 
 def _table(inv, report, show_all=False):
-    print(f"phpfixed {__version__}  host: {_safe(inv['os']['id'])} {_safe(inv['os']['stream'])}")
+    print(f"stillmapped {__version__}  host: {_safe(inv['os']['id'])} {_safe(inv['os']['stream'])}")
     for i in report["info"]:
         print(f"\n[INFO] {i}")
     shown = [r for r in report["results"] if show_all or r["status"] != FIXED]
@@ -44,13 +44,13 @@ def _table(inv, report, show_all=False):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="phpfixed",
+    ap = argparse.ArgumentParser(prog="stillmapped",
                                  description="Is each PHP build on this host fixed for a CVE? "
                                              "Read-only, offline.")
     ap.add_argument("--cve", action="append", help="CVE id to check (repeatable; default: all bundled)")
     ap.add_argument("--json", action="store_true", help="machine-readable output (always every result)")
     ap.add_argument("--all", action="store_true", help="also list fixed results")
-    ap.add_argument("--version", action="version", version=f"phpfixed {__version__}")
+    ap.add_argument("--version", action="version", version=f"stillmapped {__version__}")
     args = ap.parse_args(argv)
 
     try:
@@ -59,13 +59,13 @@ def main(argv=None):
         cves = sorted(set(args.cve or known))
         missing = [c for c in cves if c not in known]
         if not cves or missing:
-            print(f"phpfixed: no bundled data for {', '.join(missing) or 'any CVE'}", file=sys.stderr)
+            print(f"stillmapped: no bundled data for {', '.join(missing) or 'any CVE'}", file=sys.stderr)
             return 3
         inv = collect(libs={r["package"]: r["module"] for r in records if r.get("file")},
                       files={r["file"]: r["module"] for r in records if r.get("file")})
         report = resolve(inv, records, cves, strict=bool(args.cve))
     except Exception as e:  # report, don't traceback, on a production host
-        print(f"phpfixed: error: {_safe(e)}", file=sys.stderr)
+        print(f"stillmapped: error: {_safe(e)}", file=sys.stderr)
         return 3
 
     if args.json:

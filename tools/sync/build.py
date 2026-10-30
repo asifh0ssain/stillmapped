@@ -8,7 +8,7 @@ import json
 import os
 import re
 
-from phpfixed.resolve import validate_record
+from stillmapped.resolve import validate_record
 
 from . import feeds
 

@@ -4,7 +4,7 @@ Low-severity findings outside [THREAT_MODEL.md](THREAT_MODEL.md), or inside it
 but unable to cause a false `fixed` or a false exit 0 in any setup the reviews
 could build. Each one names the review that found it.
 
-The scanner (`phpfixed/*.py`) is frozen at commit 53605ab (2026-10-30): the
+The scanner (`stillmapped/*.py`) is frozen at commit 53605ab (2026-10-30): the
 fourth independent review, scoped to THREAT_MODEL.md, found no way for a
 non-root local user to cause a false `fixed` or a false exit 0. Changes after
 this point need a new threat-model review.
@@ -34,7 +34,7 @@ so this is not a non-root vector; a user without access gets a problem
 (exit 2). The socket is pinned to `/var/run/docker.sock`, so a rootless daemon
 is not queried. Fix idea: state the Docker-group assumption in the threat model.
 
-## phpfixed must be installed root-owned
+## stillmapped must be installed root-owned
 
 Review 4 (out of scope). If the package itself sits in a user-writable prefix
 (a user's `pip install`), that user can change its code or data, and root runs

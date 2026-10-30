@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from phpfixed.vercmp import compare
+from stillmapped.vercmp import compare
 
 from tools.sync import build, feeds, origin
 from tools.sync.snap import Snapshot
@@ -272,7 +272,7 @@ class TestRealSnapshot(unittest.TestCase):
     def test_oracle_reproduces_the_hand_records(self):
         with tempfile.TemporaryDirectory() as d:
             build.write(build.run(Snapshot(os.path.dirname(SNAPS[-1]))), d)
-            hand = os.path.join(os.path.dirname(__file__), "..", "..", "..", "phpfixed", "data", "php2shell.json")
+            hand = os.path.join(os.path.dirname(__file__), "..", "..", "..", "stillmapped", "data", "php2shell.json")
             self.assertEqual(build.oracle(d, hand)[0], [])
 
 

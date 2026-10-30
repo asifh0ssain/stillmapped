@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "phpfixed"
+name = "stillmapped"
 dynamic = ["version"]
 description = "Is this PHP build fixed? Read-only, offline, vendor-aware CVE fix resolver."
 readme = "README.md"
@@ -13,13 +13,13 @@ authors = [{ name = "Asif Hossain" }]
 dependencies = []
 
 [project.scripts]
-phpfixed = "phpfixed.cli:main"
+stillmapped = "stillmapped.cli:main"
 
 [tool.setuptools]
-packages = ["phpfixed"]
+packages = ["stillmapped"]
 
 [tool.setuptools.dynamic]
-version = { attr = "phpfixed.__version__" }
+version = { attr = "stillmapped.__version__" }
 
 [tool.setuptools.package-data]
-phpfixed = ["data/*.json"]
+stillmapped = ["data/*.json"]

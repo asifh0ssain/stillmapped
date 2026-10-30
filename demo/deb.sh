@@ -8,17 +8,17 @@
 # is byte-identical in both versions. Hashes below show which code is which.
 set -eu
 MODE=$1
-mkdir -p /phpfixed/data && cp /openssl-demo.json /phpfixed/data/
+mkdir -p /stillmapped/data && cp /openssl-demo.json /stillmapped/data/
 ARCH=$(dpkg --print-architecture)
 OLD=3.0.14-1~deb12u1
 NEW=3.0.14-1~deb12u2
 . /scan.sh
 deb() { echo "/cache/$1_$2_$ARCH.deb"; }
-phpfixed() { # expected-exit pid: run phpfixed here and check its verdict (check.py)
+stillmapped() { # expected-exit pid: run stillmapped here and check its verdict (check.py)
   rc=0
-  (cd / && python3 -m phpfixed --cve CVE-2024-6119 --json) > /tmp/pf.json || rc=$?
-  { echo "\$ python3 -m phpfixed --cve CVE-2024-6119 --json   (exit $rc)"; cat /tmp/pf.json
-    python3 /check.py "$rc" "$1" "$2" /tmp/pf.json || echo "CHECK FAIL (check.py error)"; } > "/out/$MODE-phpfixed.txt" 2>&1
+  (cd / && python3 -m stillmapped --cve CVE-2024-6119 --json) > /tmp/pf.json || rc=$?
+  { echo "\$ python3 -m stillmapped --cve CVE-2024-6119 --json   (exit $rc)"; cat /tmp/pf.json
+    python3 /check.py "$rc" "$1" "$2" /tmp/pf.json || echo "CHECK FAIL (check.py error)"; } > "/out/$MODE-stillmapped.txt" 2>&1
 }
 dpkg-deb -x "$(deb libssl3 $OLD)" /tmp/official-old
 dpkg-deb -x "$(deb libssl3 $NEW)" /tmp/official-new
@@ -44,7 +44,7 @@ if [ "$MODE" = stale ]; then
   run maps-after sh -c "dpkg-query -W libssl3 openssl; ps -o pid,lstart,args -p $pid; grep -E 'libssl|libcrypto' /proc/$pid/maps | sort -u -k6"
   scan after
   run hashes hashes
-  phpfixed 1 "$pid"
+  stillmapped 1 "$pid"
   run needrestart-batch needrestart -b -r l
   run needrestart-verbose needrestart -v -r l
   # What needrestart decides from: deleted or replaced mappings, no CVE data.
@@ -69,5 +69,5 @@ dpkg --compare-versions 3.0.14-1+thirdparty1 gt $NEW && echo 'dpkg: 3.0.14-1+thi
 "
   run hashes hashes
   scan after
-  phpfixed 2 none
+  stillmapped 2 none
 fi

@@ -15,7 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-UA = "phpfixed-sync/0.1"
+UA = "stillmapped-sync/0.1"
 # Extra User-Agent text per host, only for feeds whose terms ask for
 # identification (owner's answer 8). None of the five feeds does.
 CONTACT = {}

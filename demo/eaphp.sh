@@ -1,8 +1,8 @@
 #!/bin/sh
 # Runs in almalinux:9 (amd64). Installs the oldest ea-php82 CLI that cPanel's
 # public EA4 repository still serves, then scans with Trivy, Grype and the
-# current phpfixed. phpfixed has no ea-php records, so it must answer
-# unknown with exit 2; anything else is a phpfixed bug.
+# current stillmapped. stillmapped has no ea-php records, so it must answer
+# unknown with exit 2; anything else is a stillmapped bug.
 set -eu
 MODE=eaphp
 ARCH=amd64
@@ -33,15 +33,15 @@ run grype-db-search "$bin/grype" db search --vuln CVE-2026-109618
 
 cd /
 rc=0
-python3 -m phpfixed --json > /tmp/phpfixed.json || rc=$?
+python3 -m stillmapped --json > /tmp/stillmapped.json || rc=$?
 {
-  echo "\$ python3 -m phpfixed --json   (exit $rc)"
-  cat /tmp/phpfixed.json
+  echo "\$ python3 -m stillmapped --json   (exit $rc)"
+  cat /tmp/stillmapped.json
   python3 - "$rc" <<'EOF'
 import json, sys
-r = json.load(open("/tmp/phpfixed.json"))
+r = json.load(open("/tmp/stillmapped.json"))
 ea = [x for x in r["results"] if x["build"]["vendor"] == "cpanel"]
 ok = sys.argv[1] == "2" and ea and all(x["status"] == "unknown" for x in ea)
-print("CHECK unknown + exit 2 on ea-php:", "PASS" if ok else "FAIL (phpfixed bug)")
+print("CHECK unknown + exit 2 on ea-php:", "PASS" if ok else "FAIL (stillmapped bug)")
 EOF
-} > /out/eaphp-phpfixed.txt 2>&1
+} > /out/eaphp-stillmapped.txt 2>&1

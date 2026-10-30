@@ -2,12 +2,12 @@ import json
 import unittest
 from unittest.mock import MagicMock, patch
 
-from phpfixed.resolve import exit_code, load_records, resolve, resolve_one, validate_record
-from phpfixed.vercmp import branch
+from stillmapped.resolve import exit_code, load_records, resolve, resolve_one, validate_record
+from stillmapped.vercmp import branch
 
 CVE = "CVE-TEST-0001"
 
-# Fixture records only. Real records live in phpfixed/data/ and must be
+# Fixture records only. Real records live in stillmapped/data/ and must be
 # verified against the vendor's own advisory.
 UBUNTU_2404 = r"^8\.3\.6-0ubuntu0\.24\.04\.\d+$"
 RECORDS = [
@@ -182,7 +182,7 @@ class TestBundledData(unittest.TestCase):
         data = package.__truediv__.return_value
         data.is_dir.return_value = True
         data.iterdir.return_value = [source]
-        with patch("phpfixed.resolve.resources.files", return_value=package):
+        with patch("stillmapped.resolve.resources.files", return_value=package):
             with self.assertRaisesRegex(ValueError, "bad.json: upstream/php .*missing branch"):
                 load_records({CVE})
 
@@ -195,7 +195,7 @@ class TestBundledData(unittest.TestCase):
             f.read_text.return_value = json.dumps(doc)
             files.append(f)
         package.__truediv__.return_value.iterdir.return_value = files
-        with patch("phpfixed.resolve.resources.files", return_value=package):
+        with patch("stillmapped.resolve.resources.files", return_value=package):
             return load_records()
 
     def test_cve_in_two_modules_is_refused(self):

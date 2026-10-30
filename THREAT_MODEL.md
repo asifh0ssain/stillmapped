@@ -34,7 +34,7 @@ through a symlink, the result is unknown. Package databases (dpkg, rpm) and
   `md5sums`, `rpm -V`), which checks consistency, not tampering by root.
 - Files under any root: read with symlinks resolved inside that root, without
   blocking, regular files only, at most 64 MiB, never past their size.
-- Bundled records (`phpfixed/data/`): project data, validated on load. A bad
+- Bundled records (`stillmapped/data/`): project data, validated on load. A bad
   record stops the run (exit 3).
 
 ## Not covered

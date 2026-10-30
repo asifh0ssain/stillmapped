@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from phpfixed import collect as c
+from stillmapped import collect as c
 
 
 def fake_runner(outputs):
@@ -510,7 +510,7 @@ class TestCollect(unittest.TestCase):
 
     def test_no_php_is_a_problem(self):
         # Review: a host with nothing found exited 0.
-        from phpfixed.resolve import load_records, resolve
+        from stillmapped.resolve import load_records, resolve
         os.remove(os.path.join(self.root, "var/lib/dpkg/status"))
         fake_proc(self.root, 50, "/usr/sbin/php-fpm8.3")
         inv = c.collect(self.root, fake_runner({}))
@@ -544,7 +544,7 @@ class TestPanelRuntime(unittest.TestCase):
     ])
 
     def report(self):
-        from phpfixed.resolve import resolve
+        from stillmapped.resolve import resolve
         root = tempfile.mkdtemp()
         write(root, "etc/os-release", 'ID=almalinux\nVERSION_ID="9.8"\n')
         fake_proc(root, 10, "/opt/cpanel/ea-php82/root/usr/sbin/php-fpm")
@@ -557,7 +557,7 @@ class TestPanelRuntime(unittest.TestCase):
         return resolve(inv, [self.RECORD], ["CVE-TEST-0001"])
 
     def test_runtime_fix_record_does_not_fix_cli_or_running_php(self):
-        from phpfixed.resolve import exit_code
+        from stillmapped.resolve import exit_code
         report = self.report()
         php = [r for r in report["results"] if "php-cli" in r["build"]["where"]]
         self.assertEqual([r["status"] for r in php], ["not-fixed"])
@@ -601,7 +601,7 @@ class TestLibraries(unittest.TestCase):
         return root
 
     def report(self, root):
-        from phpfixed.resolve import resolve
+        from stillmapped.resolve import resolve
         inv = c.collect(root, fake_runner({}), libs={"libssl3": "openssl"}, files={"libcrypto.so.3": "openssl"})
         return resolve(inv, [OPENSSL], ["CVE-TEST-0002"])
 
@@ -609,7 +609,7 @@ class TestLibraries(unittest.TestCase):
         return [(r["status"], r.get("mapping", {}).get("pid")) for r in report["results"]]
 
     def test_mapped_old_code_is_restart_needed_not_not_fixed(self):
-        from phpfixed.resolve import exit_code
+        from stillmapped.resolve import exit_code
         root = self.host()
         fake_proc(root, 469, "/usr/bin/openssl", maps=[LIB + " (deleted)"])
         r = self.report(root)
@@ -622,7 +622,7 @@ class TestLibraries(unittest.TestCase):
 
     def test_identical_bytes_after_reinstall_is_fixed(self):
         # A deleted mapping is not old code by itself: libssl.so.3 was byte-identical in the demo.
-        from phpfixed.resolve import exit_code
+        from stillmapped.resolve import exit_code
         root = self.host()
         fake_proc(root, 5, "/usr/bin/openssl", maps=[LIB + " (deleted)"], old=b"installed code")
         r = self.report(root)
@@ -640,7 +640,7 @@ class TestLibraries(unittest.TestCase):
         self.assertEqual(self.statuses(self.report(root))[1], ("fixed", "6"))
 
     def test_unreadable_mapped_file_is_unknown_never_fixed(self):
-        from phpfixed.resolve import exit_code
+        from stillmapped.resolve import exit_code
         root = self.host()
         d = fake_proc(root, 7, "/usr/bin/openssl", maps=[LIB + " (deleted)"])
         for f in os.listdir(os.path.join(d, "map_files")):
@@ -665,7 +665,7 @@ class TestLibraries(unittest.TestCase):
         self.assertEqual(self.statuses(self.report(root))[1], ("restart-needed", "9"))
 
     def test_untraced_library_is_a_problem(self):
-        from phpfixed.resolve import exit_code
+        from stillmapped.resolve import exit_code
         root = self.host()
         fake_proc(root, 10, "/opt/app/bin/app", maps=["/opt/app/lib/libcrypto.so.3"])
         r = self.report(root)
@@ -739,7 +739,7 @@ class TestLibraries(unittest.TestCase):
             self.assertIsNone(c._lib_file(path, files), path)
 
     def test_bundled_copy_is_untraced_and_named(self):
-        from phpfixed.resolve import exit_code
+        from stillmapped.resolve import exit_code
         root = self.host()
         fake_proc(root, 16, "/usr/bin/python3", maps=["/opt/app/libs/libcrypto-1a2b3c4d.so.3"])
         r = self.report(root)
@@ -763,7 +763,7 @@ class TestLibraries(unittest.TestCase):
 
     def test_modules_do_not_cross(self):
         # PHP builds get no OpenSSL rows and the other way round; a missing module is a problem.
-        from phpfixed.resolve import load_records, resolve
+        from stillmapped.resolve import load_records, resolve
         root = self.host()
         inv = c.collect(root, fake_runner({}), libs={"libssl3": "openssl"}, files={"libcrypto.so.3": "openssl"})
         r = resolve(inv, load_records() + [OPENSSL], ["CVE-2026-109618", "CVE-TEST-0002"])
@@ -785,7 +785,7 @@ class TestPackageConsistency(unittest.TestCase):
             self.addCleanup(p.stop)
 
     def problems(self, root):
-        from phpfixed.resolve import resolve
+        from stillmapped.resolve import resolve
         inv = c.collect(root, fake_runner({}), libs={"libssl3": "openssl"}, files={"libcrypto.so.3": "openssl"})
         return [r for r in resolve(inv, [OPENSSL], ["CVE-TEST-0002"])["results"] if r.get("mapping")], inv["problems"]
 
@@ -904,7 +904,7 @@ class TestReviewSmallFixes(unittest.TestCase):
         # #5: a container's ID could redraw a host [NOT-FIXED] line as [FIXED].
         import contextlib
         import io
-        from phpfixed import cli
+        from stillmapped import cli
         root, box = TestLibraries.host(None, version="3.0.14-1~deb12u1"), TestLibraries.host(None)
         write(box, "etc/os-release", 'ID="debian\x1b[3A\x1b[2K[FIXED]"\nVERSION_ID="12"\n')
         fake_proc(root, 30, "/usr/bin/openssl", maps=[LIB], proot=box)
@@ -959,7 +959,7 @@ class TestReview2(unittest.TestCase):
             self.addCleanup(p.stop)
 
     def scan(self, root, records=(OPENSSL,), runner=None, libs={"libssl3": "openssl"}):
-        from phpfixed.resolve import exit_code, resolve
+        from stillmapped.resolve import exit_code, resolve
         files = {r["file"]: r["module"] for r in records if r.get("file")}
         inv = c.collect(root, runner or fake_runner({}), libs=libs, files=files)
         r = resolve(inv, list(records), [x["cve"] for x in records][:1])
@@ -982,7 +982,7 @@ class TestReview2(unittest.TestCase):
         self.assertEqual(code, 2)
 
     def test_container_php_package_state_problem_is_kept(self):
-        from phpfixed.resolve import exit_code, load_records, resolve
+        from stillmapped.resolve import exit_code, load_records, resolve
         box = root_with_dpkg(dpkg_status(("php8.2-fpm", "8.2.35-1~deb12u1", "install ok half-installed")))
         write(box, "etc/os-release", 'ID=debian\nVERSION_ID="12"\n')
         host = tempfile.mkdtemp()
@@ -1263,7 +1263,7 @@ class TestMountNamespace(unittest.TestCase):
     setUp = TestReview2.setUp
 
     def run_ns(self, root, view, runner, libs, rec):
-        from phpfixed.resolve import exit_code, resolve
+        from stillmapped.resolve import exit_code, resolve
         real_stat, host_st = os.stat, os.stat(root)
 
         def stat(p, *a, **k):  # Linux: such a process's /proc/PID/root is the host's root dentry

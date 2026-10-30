@@ -6,9 +6,9 @@
 # Needs only docker. Downloads public images, Debian snapshot packages,
 # pinned Trivy and Grype releases with their databases, and cPanel's public
 # EA4 repository. Containers run on the default bridge network with one added
-# capability, CHECKPOINT_RESTORE, so phpfixed can read /proc/PID/map_files.
+# capability, CHECKPOINT_RESTORE, so stillmapped can read /proc/PID/map_files.
 # The only host mounts are demo/out (results) and demo/cache (read-only,
-# except for the download step that fills it). Scripts and the phpfixed
+# except for the download step that fills it). Scripts and the stillmapped
 # package are copied in with docker cp.
 # Output: demo/out/<UTC time>/, one file per command, plus summary.txt.
 set -euo pipefail
@@ -33,7 +33,7 @@ container() { # cache-mode platform image script args...
     -v "$out:/out" -v "$here/cache:/cache:$mode" \
     "$image" sh "/$@")
   for f in prep.sh scan.sh deb.sh eaphp.sh check.py openssl-demo.json; do docker cp -q "$here/$f" "$cid:/$f"; done
-  docker cp -q "$repo/phpfixed" "$cid:/phpfixed"
+  docker cp -q "$repo/stillmapped" "$cid:/stillmapped"
   docker start -a "$cid" || rc=$?
   docker rm -f "$cid" >/dev/null
   [ "$rc" = 0 ] || echo "container $image $* exited $rc" | tee -a "$out/errors.txt"
@@ -51,10 +51,10 @@ container ro linux/amd64 almalinux:9 eaphp.sh
 cd "$out"
 {
   cat versions.txt provenance.txt errors.txt 2>/dev/null || true
-  for f in *-maps-*.txt *-hashes.txt stale-needrestart*.txt stale-needrestart-source.txt thirdparty-package.txt eaphp-package.txt eaphp-php-owner.txt eaphp-runtime-files.txt eaphp-changelog-check.txt eaphp-grype-db-search.txt eaphp-phpfixed.txt; do
+  for f in *-maps-*.txt *-hashes.txt stale-needrestart*.txt stale-needrestart-source.txt thirdparty-package.txt eaphp-package.txt eaphp-php-owner.txt eaphp-runtime-files.txt eaphp-changelog-check.txt eaphp-grype-db-search.txt eaphp-stillmapped.txt; do
     printf '\n### %s\n' "$f"; cat "$f" 2>/dev/null || echo "(missing)"
   done
-  for f in stale-phpfixed.txt thirdparty-phpfixed.txt; do
+  for f in stale-stillmapped.txt thirdparty-stillmapped.txt; do
     printf '\n### %s (CHECK line)\n' "$f"; grep '^CHECK' "$f" 2>/dev/null || echo "(missing)"
   done
   for f in *-trivy-*.txt *-grype-*.txt; do

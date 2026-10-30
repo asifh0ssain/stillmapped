@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from phpfixed import cli
+from stillmapped import cli
 
 INV = {"os": {"id": "ubuntu", "stream": "24.04"}, "workers": [], "problems": [],
        "builds": [{"source": "dpkg", "vendor": "ubuntu", "stream": "24.04", "package": "php8.3",
@@ -44,7 +44,7 @@ class TestCli(unittest.TestCase):
         self.assertIn("[NOT FULLY CHECKED]", out)
 
     def test_restart_receipt_scope_and_database_in_output(self):
-        from phpfixed.resolve import load_records
+        from stillmapped.resolve import load_records
         rec = {"cve": "CVE-TEST-0002", "module": "openssl", "vendor": "debian", "stream": "12",
                "package": "libssl3", "branch": "3.0", "file": "libcrypto.so.3", "match": "vercmp-deb",
                "fixed": "3.0.14-1~deb12u2", "status": "fixed", "origin": r"^3\.0\.\d+-\d+~deb12u\d+$",
@@ -83,7 +83,7 @@ NO_PHP = {"os": {"id": "debian", "stream": "12"}, "workers": [], "mappings": [],
 
 class TestReleasePush(unittest.TestCase):
     def run_no_php(self, *argv):
-        from phpfixed.resolve import load_records
+        from stillmapped.resolve import load_records
         with patch.object(cli, "load_records", return_value=load_records() + [OSSL_REC]):
             return run(*argv, inv=NO_PHP)
 
@@ -124,7 +124,7 @@ class TestReleasePush(unittest.TestCase):
 
     def test_container_build_does_not_make_a_module_present(self):
         # Review 5 F3: only a container's libssl3 made the host's empty check pass with exit 0.
-        from phpfixed.resolve import load_records
+        from stillmapped.resolve import load_records
         inv = {**NO_PHP, "builds": [{**NO_PHP["builds"][0], "db": "container"}]}
         with patch.object(cli, "load_records", return_value=load_records() + [OSSL_REC]):
             code, out, _ = run(inv=inv)
@@ -140,7 +140,7 @@ class TestReleasePush(unittest.TestCase):
 
     def test_default_output_shows_not_fixed_and_unknown(self):
         # Review 5 F6: only fixed rows are hidden.
-        from phpfixed.resolve import load_records
+        from stillmapped.resolve import load_records
         old = {**NO_PHP["builds"][0], "version": "3.0.14-1~deb12u1"}
         odd = {**NO_PHP["builds"][0], "version": "3.0.15-1+thirdparty1"}
         with patch.object(cli, "load_records", return_value=load_records() + [OSSL_REC]):

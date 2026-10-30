@@ -1,6 +1,6 @@
 import unittest
 
-from phpfixed.vercmp import compare, compare_deb, compare_rpm, rpmvercmp, split_evr
+from stillmapped.vercmp import compare, compare_deb, compare_rpm, rpmvercmp, split_evr
 
 
 # Vectors from rpm's own test suite (tests/rpmvercmp.at).

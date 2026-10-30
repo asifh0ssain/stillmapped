@@ -1,4 +1,4 @@
-"""Checks phpfixed's verdict in deb.sh. Args: exit code, expected exit, pid, JSON file.
+"""Checks stillmapped's verdict in deb.sh. Args: exit code, expected exit, pid, JSON file.
 
 stale (expected 1): the package is fixed, and the pid that mapped libcrypto
 before the upgrade is "in-memory version unknown, restart needed".

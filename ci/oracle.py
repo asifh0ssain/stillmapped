@@ -1,4 +1,4 @@
-"""CI: diff phpfixed's version ordering against the real dpkg or rpm.
+"""CI: diff stillmapped's version ordering against the real dpkg or rpm.
 
 Usage: python3 -m ci.oracle deb|rpm N   (from the repo root)
 Generates N random version pairs and fails on any pair the real tool orders
@@ -13,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 
-from phpfixed.vercmp import compare_deb, rpmvercmp
+from stillmapped.vercmp import compare_deb, rpmvercmp
 
 
 def gen(rng, chars, n):
@@ -59,7 +59,7 @@ def main(kind, n):
         ours, real = [rpmvercmp(a, b) for a, b in pairs], rpm_cmps(pairs)
     bad = [(p, o, r) for p, o, r in zip(pairs, ours, real) if o != r]
     for (a, b), o, r in bad[:20]:
-        print(f"MISMATCH {a!r} vs {b!r}: phpfixed {o}, {kind} {r}")
+        print(f"MISMATCH {a!r} vs {b!r}: stillmapped {o}, {kind} {r}")
     print(f"{kind}: {n - len(bad)}/{n} pairs agree")
     return 1 if bad else 0
 

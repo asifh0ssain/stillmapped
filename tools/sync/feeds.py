@@ -10,7 +10,7 @@ import html
 import json
 import re
 
-from phpfixed.vercmp import branch, compare
+from stillmapped.vercmp import branch, compare
 
 from . import origin
 

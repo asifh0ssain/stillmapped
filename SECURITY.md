@@ -1,6 +1,6 @@
 # Security
 
-phpfixed is meant to run as root on production hosts, so every input (package
+stillmapped is meant to run as root on production hosts, so every input (package
 databases, /proc, image metadata, file paths) is treated as hostile.
 
 ## Guarantees under test
@@ -12,7 +12,7 @@ databases, /proc, image metadata, file paths) is treated as hostile.
 - Never reports `fixed` on ambiguous data; see the README.
 
 A way to break any of these is a vulnerability. So is any input that makes
-phpfixed report `fixed` for a build that is not.
+stillmapped report `fixed` for a build that is not.
 
 ## Reporting
 
