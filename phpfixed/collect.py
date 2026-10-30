@@ -54,8 +54,9 @@ def _which(name):
     return shutil.which(name, path=_PATH)
 
 
-def run(cmd):
-    """Run a read-only command with a minimal environment; stdout or None."""
+def run(cmd, ok=(0,)):
+    """Run a read-only command with a minimal environment; stdout, or None
+    unless it exited with a code in ok."""
     exe = _which(cmd[0])
     if not exe:
         return None
@@ -65,7 +66,7 @@ def run(cmd):
                            env={"PATH": _PATH, "LC_ALL": "C"}, timeout=RUN_TIMEOUT, check=False)
     except (OSError, subprocess.SubprocessError):
         return None
-    return p.stdout if p.returncode == 0 else None
+    return p.stdout if p.returncode in ok else None
 
 
 def os_release(root="/"):
@@ -264,12 +265,12 @@ def _read(d, name):
         return fh.read()
 
 
-def _sha256(fd):
+def _sha256(fd, algo="sha256"):
     with open(fd, "rb") as fh:
         st = os.fstat(fh.fileno())
         if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_READ:
             raise OSError("not a regular file of at most 64 MiB")
-        h = hashlib.sha256()
+        h = hashlib.new(algo)
         while chunk := fh.read(1 << 20):
             h.update(chunk)
         return h.hexdigest()
@@ -302,10 +303,10 @@ def _root_owned(path):
     return st.st_uid == 0 and not st.st_mode & 0o022
 
 
-def _dpkg_list(root, pkg):
-    """Paths dpkg lists for an installed package (any architecture)."""
+def _dpkg_list(root, pkg, ext="list"):
+    """Lines of dpkg's file list (or md5sums) for a package, any architecture."""
     info, files = os.path.join(root, "var/lib/dpkg/info"), []
-    for lst in [os.path.join(info, pkg + ".list"), *glob.glob(os.path.join(info, glob.escape(pkg) + ":*.list"))]:
+    for lst in [os.path.join(info, f"{pkg}.{ext}"), *glob.glob(os.path.join(info, f"{glob.escape(pkg)}:*.{ext}"))]:
         try:
             with open(lst, encoding="utf-8", errors="replace") as fh:
                 files += fh.read().splitlines()
@@ -337,9 +338,40 @@ def _in_root(proot, path):
 
 
 def _dpkg_owns(proot, pkg, path):
+    """The entry in pkg's file list that is path, or None."""
     name = os.path.basename(path)
-    return any(f == path or os.path.basename(f) == name and _in_root(proot, f) == path
-               for f in _dpkg_list(proot, pkg))
+    return next((f for f in _dpkg_list(proot, pkg)
+                 if f == path or os.path.basename(f) == name and _in_root(proot, f) == path), None)
+
+
+def _tampered(proot, b, path, runner):
+    """Why the installed file at path is not the package's own copy, or None.
+    Checks consistency with the package database, not tampering by root."""
+    if b["source"] == "rpm":  # rpm -V exits 1 when a file differs or the package is gone
+        out = runner(["rpm", "-V", "--noconfig", b["where"]], ok=(0, 1))
+        bad = out is None or "is not installed" in out or any(
+            line.endswith(" " + path) and ("5" in line[:9] or "S" in line[:9] or line.startswith("missing"))
+            for line in out.splitlines())
+        return "it fails rpm -V" if bad else None
+    if b["source"] != "dpkg":
+        return None
+    entry = _dpkg_owns(proot, b["where"], path)
+    try:
+        with open(os.path.join(proot, "var/lib/dpkg/diversions"), encoding="utf-8", errors="replace") as fh:
+            diverted = fh.read().split("\n")[0::3]  # lines: original, diverted to, package
+    except FileNotFoundError:
+        diverted = []
+    if entry in diverted:
+        return "it is diverted (dpkg-divert)"
+    try:
+        sums = {p: h for h, _, p in (line.partition("  ") for line in _dpkg_list(proot, b["where"], "md5sums"))}
+        if entry.lstrip("/") not in sums:
+            return "dpkg has no md5sum for it"
+        if _sha256(os.open(os.path.join(proot, path.lstrip("/")), os.O_RDONLY), "md5") != sums[entry.lstrip("/")]:
+            return "it differs from dpkg's md5sum"
+    except OSError as e:
+        return f"it can't be checked ({e.strerror or e})"
+    return None
 
 
 def _rpm_owner(runner, path):
@@ -419,12 +451,14 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
                                     from_dpkg(os_release(proot), proot, libs)[0]]
                 if (key, path, module) not in owners:
                     rpm_name = use_rpm and not in_container and _rpm_owner(runner, path)
-                    b = owners[key, path, module] = _owner(proot, path, by_root[key], rpm_name, module)
-                    if b and (in_container or b["source"] == "source"):
+                    b = _owner(proot, path, by_root[key], rpm_name, module)
+                    why = owners[key, path, module] = b and _tampered(proot, b, path, runner) or b
+                    if isinstance(why, dict) and (in_container or b["source"] == "source"):
                         extra.append({**b, "where": f"{b['where']} (pid {pid}{', container' if in_container else ''})"})
                 b = owners[key, path, module]
-                if b is None:
-                    notes.append(f"pid {pid} runs {mapped}, which no checked package or build installed")
+                if not isinstance(b, dict):  # None (no owner) or why its file isn't the package's
+                    notes.append(f"pid {pid} runs {mapped}, which no checked package or build installed"
+                                 + (f": {b}" if b else ""))
                     continue
                 same, info = _same_code(d, line, proot, path) if line else (None, {"why": "not in maps"})
                 if same is None:

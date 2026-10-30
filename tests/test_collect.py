@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import tempfile
@@ -9,7 +10,7 @@ from phpfixed import collect as c
 
 def fake_runner(outputs):
     """Runner stub: maps the command's first words (after docker's -H) to canned stdout."""
-    def runner(cmd):
+    def runner(cmd, ok=(0,)):
         words = [w for w in cmd if w not in c._DOCKER[1:]]
         return outputs.get(" ".join(words[:2]))
     return runner
@@ -75,11 +76,19 @@ DEB_LISTS = {
 }
 
 
+INSTALLED = b"installed code"  # what fake_proc puts in a packaged file it creates
+
+
+def md5sums(files):
+    return "".join(f"{hashlib.md5(INSTALLED).hexdigest()}  {f.lstrip('/')}\n" for f in files.split())
+
+
 def root_with_dpkg(text):
     root = tempfile.mkdtemp()
     write(root, "var/lib/dpkg/status", text)
     for pkg, files in DEB_LISTS.items():
         write(root, f"var/lib/dpkg/info/{pkg}.list", files)
+        write(root, f"var/lib/dpkg/info/{pkg}.md5sums", md5sums(files))
     return root
 
 
@@ -309,7 +318,7 @@ def fake_proc(root, pid, exe=None, maps=(), proot=None, old=b"old code"):
         path, deleted = p.removesuffix(" (deleted)"), p.endswith(" (deleted)")
         disk = os.path.join(proot, path.lstrip("/"))
         if not os.path.exists(disk):
-            write(proot, path.lstrip("/"), "installed code")
+            write(proot, path.lstrip("/"), INSTALLED.decode())
         st = os.stat(disk)
         rng = f"7f{i:02x}0000-7f{i:02x}1000"
         lines.append(f"{rng} r-xp 00000000 {os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x} "
@@ -366,9 +375,10 @@ class TestWorkers(unittest.TestCase):
         with patch.object(c, "_which", return_value="/usr/bin/rpm"):
             self.builds = c.from_rpm(("sles", "15.7"), fake_runner(
                 {"rpm -qa": "apache2-mod_php8\t(none):8.3.36-150700.3.24.1", "rpm -q": RPM_FILES}))[0]
+            runner = fake_runner({"rpm -qf": "apache2-mod_php8\n", "rpm -V": ""})
         self.assertEqual([b["package"] for b in self.builds], ["php8"])
         fake_proc(self.root, 300, "/usr/sbin/httpd-prefork", maps=["/usr/lib64/apache2/mod_php8.so (deleted)"])
-        procs, _, problems = self.workers(fake_runner({"rpm -qf": "apache2-mod_php8\n"}))
+        procs, _, problems = self.workers(runner)
         self.assertEqual([(p["pid"], p["stale"]) for p in procs], [("300", True)])
         self.assertEqual(problems, [])
 
@@ -491,7 +501,7 @@ class TestPanelRuntime(unittest.TestCase):
         with patch.object(c, "_which", side_effect=which), \
                 patch.object(c.os, "geteuid", return_value=0), \
                 patch.object(c, "_root_owned", return_value=True):
-            inv = c.collect(root, fake_runner({"rpm -qa": self.RPM, "rpm -q": self.FILES,
+            inv = c.collect(root, fake_runner({"rpm -qa": self.RPM, "rpm -q": self.FILES, "rpm -V": "",
                                               "rpm -qf": "ea-php82-php-fpm\n"}))
         return resolve(inv, [self.RECORD], ["CVE-TEST-0001"])
 
@@ -536,6 +546,7 @@ class TestLibraries(unittest.TestCase):
         write(root, "etc/os-release", 'ID=debian\nVERSION_ID="12"\n')
         write(root, "var/lib/dpkg/status", dpkg_status(("libssl3", version, OK)))
         write(root, "var/lib/dpkg/info/libssl3:amd64.list", f"/.\n{lst}\n")
+        write(root, "var/lib/dpkg/info/libssl3:amd64.md5sums", md5sums(lst))
         return root
 
     def report(self, root):
@@ -590,8 +601,8 @@ class TestLibraries(unittest.TestCase):
 
     def test_oversize_mapped_file_is_unknown(self):
         root = self.host()
-        fake_proc(root, 8, "/usr/bin/openssl", maps=[LIB + " (deleted)"])
-        with patch.object(c, "MAX_READ", 3):
+        fake_proc(root, 8, "/usr/bin/openssl", maps=[LIB + " (deleted)"], old=b"x" * 100)
+        with patch.object(c, "MAX_READ", 20):  # the installed file (14 bytes) fits, the mapped one doesn't
             self.assertTrue(any("pid 8: can't compare" in p for p in self.report(root)["problems"]))
 
     def test_map_files_name_drops_zero_padding(self):
@@ -689,3 +700,56 @@ class TestLibraries(unittest.TestCase):
         r = self.report(self.host())
         self.assertEqual(r["limits"], ["libcrypto.so.3: dynamically linked copies only; "
                                        "statically linked or embedded copies are not checked"])
+
+
+class TestPackageConsistency(unittest.TestCase):
+    """Review finding #2: the installed file must be the package's own copy."""
+
+    def setUp(self):
+        for p in (patch.object(c, "_which", return_value=None), patch.object(c.os, "geteuid", return_value=0)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def problems(self, root):
+        from phpfixed.resolve import resolve
+        inv = c.collect(root, fake_runner({}), libs={"libssl3": "openssl"}, files={"libcrypto.so.3": "openssl"})
+        return [r for r in resolve(inv, [OPENSSL], ["CVE-TEST-0002"])["results"] if r.get("mapping")], inv["problems"]
+
+    def test_dpkg_diverted_file_is_untraced(self):
+        root = TestLibraries.host(None)
+        write(root, "var/lib/dpkg/diversions", f"{LIB}\n{LIB}.distrib\n:\n")
+        fake_proc(root, 20, "/usr/bin/openssl", maps=[LIB])
+        mapped, problems = self.problems(root)
+        self.assertEqual((mapped, len(problems)), ([], 1))
+        self.assertIn("diverted", problems[0])
+
+    def test_file_differing_from_md5sums_is_untraced(self):
+        root = TestLibraries.host(None)
+        fake_proc(root, 21, "/usr/bin/openssl", maps=[LIB])
+        write(root, LIB.lstrip("/"), "admin's own build")  # same path, other bytes, new inode
+        mapped, problems = self.problems(root)
+        self.assertEqual(mapped, [])
+        self.assertTrue(any("differs from dpkg's md5sum" in p for p in problems))
+
+    def test_missing_md5sums_is_untraced(self):
+        root = TestLibraries.host(None)
+        os.remove(os.path.join(root, "var/lib/dpkg/info/libssl3:amd64.md5sums"))
+        fake_proc(root, 22, "/usr/bin/openssl", maps=[LIB])
+        mapped, problems = self.problems(root)
+        self.assertEqual(mapped, [])
+        self.assertTrue(any("no md5sum" in p for p in problems))
+
+    def test_rpm_file_must_pass_rpm_verify(self):
+        lib = "/usr/lib64/libcrypto.so.3.5.8"
+        for verify, traced in (("", True), (f"S.5....T.    {lib}\n", False), (f".......T.    {lib}\n", True),
+                               ("package openssl-libs is not installed\n", False), (None, False)):
+            with self.subTest(verify=verify):
+                root = tempfile.mkdtemp()
+                write(root, "etc/os-release", 'ID=almalinux\nVERSION_ID="9.8"\n')
+                fake_proc(root, 23, "/usr/bin/openssl", maps=[lib])
+                runner = fake_runner({"rpm -qa": "openssl-libs\t1:3.5.8-2.el9_8", "rpm -qf": "openssl-libs\n",
+                                      "rpm -V": verify})
+                with patch.object(c, "_which", return_value="/usr/bin/rpm"):
+                    inv = c.collect(root, runner, libs={"openssl-libs": "openssl"}, files={"libcrypto.so.3": "openssl"})
+                self.assertEqual(bool(inv["mappings"]), traced)
+                self.assertEqual(any("fails rpm -V" in p for p in inv["problems"]), not traced)
