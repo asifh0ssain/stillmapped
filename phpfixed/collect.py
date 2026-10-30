@@ -457,9 +457,10 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
             d = os.open(os.path.join(proc, pid), os.O_RDONLY | os.O_DIRECTORY)
         except OSError:
             continue
-        pw, pm, notes, exe = [], [], [], None  # committed only if the process is still alive at the end
+        pw, pm, notes, exe, kthread = [], [], [], None, None  # committed only if still alive at the end
         try:
-            start = _read(d, "stat").rsplit(")", 1)[1].split()[19]
+            fields = _read(d, "stat").rsplit(")", 1)[1].split()
+            start, kthread = fields[19], int(fields[6]) & 0x200000  # PF_KTHREAD
             exe = os.readlink("exe", dir_fd=d)
             ns = [os.readlink(f"ns/{n}", dir_fd=d) for n in ("user", "mnt")]
             with open(os.open("maps", os.O_RDONLY, dir_fd=d), encoding="utf-8", errors="replace") as fh:
@@ -514,12 +515,14 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
             unreadable += 1
             continue
         except (OSError, IndexError) as e:
-            try:  # skip a kernel thread (no exe) or a process that is gone; anything else is a problem
-                if exe is None or not _read(d, "stat"):
+            try:  # skip a kernel thread, a process that is gone, or a zombie (no exe, one task left)
+                if kthread is None or kthread or not _read(d, "stat") or exe is None and len(
+                        os.listdir(os.path.join(proc, pid, "task"))) < 2:
                     continue
             except OSError:
                 continue
-            pw, pm, notes = [], [], [f"pid {pid} runs {exe} and was not fully checked ({e})"]
+            pw, pm, notes = [], [], [f"pid {pid} runs {exe or 'a program whose main thread has exited'} "
+                                     f"and was not fully checked ({e})"]
         finally:
             os.close(d)
         problems, workers, mappings = problems + notes, workers + pw, mappings + pm

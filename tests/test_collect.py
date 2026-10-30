@@ -1159,3 +1159,30 @@ class TestReview2(unittest.TestCase):
         os.symlink(os.path.join(box, "real"), os.path.join(box, "link"))
         with patch.object(c, "_in_root", return_value="/link"), self.assertRaises(OSError):
             c._slurp(box, "/anything")
+
+
+class TestReview3(unittest.TestCase):
+    """Third independent review, scoped to THREAT_MODEL.md."""
+
+    setUp = TestReview2.setUp
+    scan = TestReview2.scan
+
+    def test_process_whose_main_thread_exited_is_a_problem(self):
+        # #1: pthread_exit in the main thread hid a live worker thread still mapping old code; exit 0.
+        host = TestLibraries.host(None)
+        d = fake_proc(host, 466)  # exe and maps unreadable through the zombie leader
+        os.makedirs(os.path.join(d, "task/466"))
+        os.makedirs(os.path.join(d, "task/467"))  # a live thread
+        r, code = self.scan(host)
+        self.assertIn("pid 466 runs a program whose main thread has exited and was not fully checked", r["problems"][0])
+        self.assertEqual(code, 2)
+
+    def test_kernel_thread_and_plain_zombie_are_skipped(self):
+        host = TestLibraries.host(None)
+        write(host, "proc/2/stat", f"2 (kthreadd) S {'0 ' * 5}2097216 {'0 ' * 12}4242 0\n")  # PF_KTHREAD
+        os.makedirs(os.path.join(host, "proc/2/task/2"))
+        os.makedirs(os.path.join(host, "proc/2/task/3"))
+        d = fake_proc(host, 70)  # zombie: no exe, one task
+        os.makedirs(os.path.join(d, "task/70"))
+        r, code = self.scan(host)
+        self.assertEqual(r["problems"], [])
