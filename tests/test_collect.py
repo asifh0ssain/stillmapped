@@ -937,3 +937,45 @@ class TestReviewSmallFixes(unittest.TestCase):
         fake_proc(root, 71, "/usr/bin/uwsgi-core", maps=["/usr/lib/apache2/modules/libphp8.3.so (deleted)"])
         workers = c.running_workers(root, builds, fake_runner({}))[0]
         self.assertEqual([(w["pid"], w["stale"]) for w in workers], [("71", True)])
+
+
+class TestReview2(unittest.TestCase):
+    """Second independent review, findings #1 to #12."""
+
+    def setUp(self):
+        for p in (patch.object(c, "_which", return_value=None), patch.object(c.os, "geteuid", return_value=0)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def scan(self, root, records=(OPENSSL,), runner=None, libs={"libssl3": "openssl"}):
+        from phpfixed.resolve import exit_code, resolve
+        files = {r["file"]: r["module"] for r in records if r.get("file")}
+        inv = c.collect(root, runner or fake_runner({}), libs=libs, files=files)
+        r = resolve(inv, list(records), [x["cve"] for x in records][:1])
+        return r, exit_code(r)
+
+    def container(self, box, maps=(LIB,), host=None):
+        """A host (empty unless given) and pid 100 running inside the container root box."""
+        if host is None:
+            host = tempfile.mkdtemp()
+            write(host, "etc/os-release", 'ID=debian\nVERSION_ID="12"\n')
+        fake_proc(host, 100, "/usr/bin/openssl", maps=list(maps), proot=box)
+        return host
+
+    def test_container_package_state_problem_is_kept(self):
+        # #1: a half-installed libssl3 in a container read fixed, exit 0.
+        box = TestLibraries.host(None)
+        write(box, "var/lib/dpkg/status", dpkg_status(("libssl3", "3.0.14-1~deb12u2", "install ok half-installed")))
+        r, code = self.scan(self.container(box))
+        self.assertTrue(any(p.startswith("container of pid 100: dpkg state of libssl3") for p in r["problems"]))
+        self.assertEqual(code, 2)
+
+    def test_container_php_package_state_problem_is_kept(self):
+        from phpfixed.resolve import exit_code, load_records, resolve
+        box = root_with_dpkg(dpkg_status(("php8.2-fpm", "8.2.35-1~deb12u1", "install ok half-installed")))
+        write(box, "etc/os-release", 'ID=debian\nVERSION_ID="12"\n')
+        host = tempfile.mkdtemp()
+        fake_proc(host, 100, "/usr/sbin/php-fpm8.2", proot=box)
+        r = resolve(c.collect(host, fake_runner({})), load_records(), ["CVE-2026-109618"])
+        self.assertTrue(any(p.startswith("container of pid 100: dpkg state of php8.2-fpm") for p in r["problems"]))
+        self.assertEqual(exit_code(r), 2)

@@ -430,7 +430,7 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
     problems = [] if os.geteuid() == 0 else ["not run as root: other users' processes may be hidden"]
     host = os.stat(root)
     host = (host.st_dev, host.st_ino)
-    by_root = {host: list(builds)}
+    by_root = {host: (list(builds), [])}  # root -> (builds, problems of its package database)
     use_rpm = any(b["source"] == "rpm" for b in builds)
     owners, workers, mappings, extra, unreadable = {}, [], [], [], 0
     for pid in sorted((p for p in os.listdir(proc) if p.isdigit()), key=int):
@@ -455,11 +455,12 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
                 in_container = key != host
                 module = "php" if mapped == php else files[_lib_file(path, files)]
                 if key not in by_root:  # rpm can't read a container's database; dpkg's is a file
-                    by_root[key] = [{**b, "db": "container"} for b in
-                                    from_dpkg(os_release(proot), proot, libs)[0]]
+                    found, issues = from_dpkg(os_release(proot), proot, libs)
+                    by_root[key] = [{**b, "db": "container"} for b in found], [f"container of pid {pid}: {p}" for p in issues]
+                notes += by_root[key][1]
                 if (key, path, module) not in owners:
                     rpm_name = use_rpm and not in_container and _rpm_owner(runner, path)
-                    b = _owner(proot, path, by_root[key], rpm_name, module)
+                    b = _owner(proot, path, by_root[key][0], rpm_name, module)
                     why = b and _tampered(proot, b, path, runner) or b
                     if b is None and module != "php":
                         other = rpm_name or _dpkg_owner(proot, path)
@@ -491,7 +492,7 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
         problems, workers, mappings = problems + notes, workers + pw, mappings + pm
     if unreadable:
         problems.append(f"{unreadable} process(es) unreadable; run as root to check every process")
-    return workers, extra, problems, mappings
+    return workers, extra, list(dict.fromkeys(problems)), mappings
 
 
 def collect(root="/", runner=run, libs={}, files={}):
