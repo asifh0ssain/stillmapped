@@ -107,7 +107,7 @@ def from_dpkg(osr, root="/", libs={}):
         return [], []
     except OSError as e:
         return [], [f"dpkg database unreadable: {e.strerror or e}"]
-    builds = []
+    builds, problems = [], []
     for para in paragraphs:
         f = dict(line.split(": ", 1) for line in para.splitlines()
                  if ": " in line and not line[0].isspace())
@@ -120,7 +120,10 @@ def from_dpkg(osr, root="/", libs={}):
             builds.append(_build("dpkg", *osr, name, version, "vercmp-deb", name, libs[name]))
             continue
         m = _DEB_PKG.match(name) or _PANEL.match(name)
-        if not m or not any(_PHP_FILE.search(f) for f in _dpkg_list(root, name)):
+        files = m and _dpkg_list(root, name)
+        if m and not files:
+            problems.append(f"dpkg has no readable file list for {name}; it was not checked")
+        if not files or not any(_PHP_FILE.search(f) for f in files):
             continue
         pkg = m.group(1)
         if pkg.startswith(("ea-", "alt-", "plesk-")):
@@ -130,7 +133,7 @@ def from_dpkg(osr, root="/", libs={}):
         else:
             vendor, stream = osr
         builds.append(_build("dpkg", vendor, stream, pkg, version, "vercmp-deb", name))
-    return builds, []
+    return builds, problems
 
 
 def from_rpm(osr, runner=run, libs={}):

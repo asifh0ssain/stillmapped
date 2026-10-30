@@ -140,6 +140,13 @@ class TestDpkg(unittest.TestCase):
         write(root, "var/lib/dpkg/info/php8.3-common.list", "/usr/lib/php\n/usr/share/php8.3-common\n")
         self.assertEqual(c.from_dpkg(("ubuntu", "24.04"), root), ([], []))
 
+    def test_php_package_without_file_list_is_a_problem(self):
+        # Review #3: a missing .list silently dropped an unfixed php8.3-cli (exit 0).
+        root = root_with_dpkg(dpkg_status(("php8.3-cli", "8.3.6-0ubuntu0.24.04.12", OK)))
+        os.remove(os.path.join(root, "var/lib/dpkg/info/php8.3-cli.list"))
+        builds, problems = c.from_dpkg(("ubuntu", "24.04"), root)
+        self.assertEqual((builds, problems), ([], ["dpkg has no readable file list for php8.3-cli; it was not checked"]))
+
     def test_no_dpkg(self):
         self.assertEqual(c.from_dpkg(("debian", "12"), tempfile.mkdtemp()), ([], []))
 
