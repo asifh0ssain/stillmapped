@@ -1248,3 +1248,53 @@ class TestEvidenceRule(unittest.TestCase):
         with as_root(owned_by_user=("/usr/local/php83",)):
             builds, problems = c.from_directadmin(root)
         self.assertEqual((builds, len(problems)), ([], 1))
+
+
+class TestMountNamespace(unittest.TestCase):
+    """Review 3 #4: a process in its own mount namespace under the host's root."""
+
+    setUp = TestReview2.setUp
+
+    def run_ns(self, root, view, runner, libs, rec):
+        from phpfixed.resolve import exit_code, resolve
+        real_stat, host_st = os.stat, os.stat(root)
+
+        def stat(p, *a, **k):  # Linux: such a process's /proc/PID/root is the host's root dentry
+            return host_st if p == os.path.join(root, "proc/200/root") else real_stat(p, *a, **k)
+        with patch.object(c.os, "stat", stat):
+            inv = c.collect(root, runner, libs=libs, files={"libcrypto.so.3": "openssl"})
+        r = resolve(inv, [rec], [rec["cve"]])
+        return [(x["mapping"]["pid"], x["status"]) for x in r["results"] if x.get("mapping")], exit_code(r)
+
+    def test_dpkg_bind_mounted_file_is_checked_through_its_own_root(self):
+        import shutil
+        root = TestLibraries.host(None)
+        fake_proc(root, 100, "/usr/sbin/sshd", maps=[LIB])  # the host's genuine file, checked first
+        view = root + "-ns200"
+        shutil.copytree(root, view, symlinks=True, ignore=shutil.ignore_patterns("proc"))
+        write(view, LIB.lstrip("/"), "old libcrypto bound over the packaged path")
+        fake_proc(root, 200, "/usr/sbin/legacyd", maps=[LIB], proot=view, mntns="mnt:[4026532999]")
+        got, code = self.run_ns(root, view, fake_runner({}), {"libssl3": "openssl"}, OPENSSL)
+        self.assertEqual((got, code), ([("100", "fixed")], 2))
+
+    def test_rpm_file_this_process_sees_must_be_the_one_checked(self):
+        import shutil
+        lib = "/usr/lib64/libcrypto.so.3.5.8"
+        rec = {**OPENSSL, "vendor": "almalinux", "stream": "9", "package": "openssl-libs", "match": "vercmp-rpm",
+               "branch": "3.5", "fixed": "1:3.5.8-2.el9_8", "origin": r"^1:3\.5\.\d+-\d+\.el9(_\d+)?$"}
+        runner = fake_runner({"rpm -qa": "openssl-libs\t1:3.5.8-2.el9_8", "rpm -V": "",
+                              "rpm -qf": "openssl-libs 1:3.5.8-2.el9_8\n"})
+        for bound, want in ((False, [("200", "fixed")]), (True, [])):
+            with self.subTest(bound=bound):
+                root = tempfile.mkdtemp()
+                write(root, "etc/os-release", 'ID=almalinux\nVERSION_ID="9.8"\n')
+                write(root, lib.lstrip("/"), INSTALLED.decode())
+                view = root + "-ns200"
+                shutil.copytree(root, view, symlinks=True)
+                if bound:
+                    write(view, lib.lstrip("/"), "old libcrypto bound over the packaged path")
+                fake_proc(root, 200, "/usr/sbin/legacyd", maps=[lib], proot=view, mntns="mnt:[4026532999]")
+                with patch.object(c, "_which", side_effect=lambda n: "/usr/bin/rpm" if n == "rpm" else None):
+                    got, code = self.run_ns(root, view, runner, {"openssl-libs": "openssl"}, rec)
+                self.assertEqual(got, want)
+                self.assertEqual(code, 2 if bound else 0)

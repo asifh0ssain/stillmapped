@@ -351,6 +351,11 @@ def _dpkg_owns(proot, pkg, path):
                  and f"{_in_root(proot, os.path.dirname(f)).rstrip('/')}/{name}" == path), None)
 
 
+def _same_file(r1, r2, path):
+    s1, s2 = os.stat(_at(r1, path)), os.stat(_at(r2, path))
+    return (s1.st_dev, s1.st_ino) == (s2.st_dev, s2.st_ino) or _slurp(r1, path) == _slurp(r2, path)
+
+
 def _tampered(proot, b, path, runner):
     """Why the installed file at path is not the package's own copy, or None.
     Checks consistency with the package database, not tampering by root."""
@@ -484,17 +489,22 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
                     found, issues = from_dpkg(os_release(proot), proot, libs)
                     by_root[key] = [{**b, "db": "container"} for b in found], [f"container of pid {pid}: {p}" for p in issues]
                 notes += by_root[key][1]
-                if (key, path, module) not in owners:
+                # Keyed by mount namespace too: a service with its own (PrivateTmp, a bind
+                # mount) can see another file at the packaged path under the same root.
+                ck = (key, ns[1], path, module)
+                if ck not in owners:
                     rpm_name = use_rpm and not in_container and _rpm_owner(runner, path)
                     b = _owner(proot, path, by_root[key][0], rpm_name, module)
                     why = b and _tampered(proot, b, path, runner) or b
+                    if why is b and b and b["source"] == "rpm" and ns[1] != own[1] and not _same_file(proot, root, path):
+                        why = "it is not the file rpm -V checked on the host"
                     if b is None and module != "php":
                         other = rpm_name or _dpkg_owner(proot, path, indexes.setdefault(key, {}))
                         why = f"owned by {other}, which no record covers" if other else "bundled copy, not owned by a package"
-                    owners[key, path, module] = why
+                    owners[ck] = why
                     if isinstance(why, dict) and (in_container or b["source"] == "source"):
                         extra.append({**b, "where": f"{b['where']} (pid {pid}{', container' if in_container else ''})"})
-                b = owners[key, path, module]
+                b = owners[ck]
                 if not isinstance(b, dict):  # None (no owner) or why its file isn't the package's
                     notes.append(f"pid {pid} runs {mapped}, which no checked package or build installed"
                                  + (f": {b}" if b else ""))
