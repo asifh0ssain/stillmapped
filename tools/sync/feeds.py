@@ -96,21 +96,29 @@ def debian(snap, cve, module, out, eol):
             out.add(cve, module, {**rec, "branch": branch(f), "status": "fixed", "match": "vercmp-deb", "fixed": f,
                                   "origin": o, "evidence": f"{src} {suite} fixed {f}" + (f", {adv}" if adv else "")})
         elif re.fullmatch(r"(\d+:)?\d+\.\d+\.\d+-\d+", f):
-            # Owner's answer 5: fixed before the release shipped. Every version
-            # the release ships must be fixed and newer. These are not several
-            # fixes for one fix, so the LOWEST shipped one is the record's fixed
-            # version (owner, 2026-10-30): a host on any shipped build reads fixed.
+            # Owner's answer 5: fixed before the release shipped, so every build
+            # of the release carries the fix. The tracker lists only today's
+            # builds; fixed is the LOWEST build ever published in the release's
+            # own ~debNuM format, same branch, newer than the fix (owner's option
+            # A, 2026-10-30), so a host on an older point release reads fixed.
             vs = sorted((v for v, _ in rows), key=_DEB)
-            top = highest("vercmp-deb", vs, min)
-            o = top and origin.build(origin.debian(stream), top, eol.get(branch(top)))
+            hist = [v for v in _history(snap, src) or [] if re.fullmatch(rf"(\d+:)?\d+\.\d+\.\d+-\d+~deb{stream}u\d+", v) and branch(v) == branch(f) and compare("vercmp-deb", v, f) > 0]
+            o = (low := highest("vercmp-deb", hist, min)) and origin.build(origin.debian(stream)[:1], low, eol.get(branch(low)))
             if {s for _, s in rows} != {"fixed"} or any(compare("vercmp-deb", v, f) <= 0 for v in vs) or not o:
-                out.skip(cve, "debian", stream, pkg, f"fixed in {f} before {suite}, but {suite} ships {vs} not all fixed, newer and in its format")
+                out.skip(cve, "debian", stream, pkg, f"fixed in {f} before {suite}, but {suite} ships {vs} not all fixed and newer, or snapshot.debian.org lists no clean lowest ~deb{stream}u build: {sorted(hist)}")
             else:
-                out.add(cve, module, {**rec, "branch": branch(top), "status": "fixed", "match": "vercmp-deb",
-                                      "fixed": top, "origin": o,
-                                      "evidence": f"{src} fixed in {f} before {suite}; {suite} ships {', '.join(vs)}"})
+                out.add(cve, module, {**rec, "branch": branch(low), "status": "fixed", "match": "vercmp-deb", "fixed": low, "origin": o,
+                                      "evidence": f"{src} fixed in {f} before {suite}; lowest {suite} build on snapshot.debian.org: {low}"})
         else:
             out.skip(cve, "debian", stream, pkg, f"fixed version {f} is not in the {suite} format")
+
+
+def _history(snap, src):  # every version snapshot.debian.org has of a source package, or None
+    page = snap.get(f"https://snapshot.debian.org/mr/package/{src}/")  # offline, a missing page is an error
+    try:
+        return [r["version"] for r in json.loads(page)["result"]]
+    except (TypeError, ValueError, KeyError):
+        return None
 
 
 def ubuntu_index(snap, module):

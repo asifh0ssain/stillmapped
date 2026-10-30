@@ -1,6 +1,7 @@
 import glob
 import json
 import os
+import pathlib
 import re
 import tempfile
 import unittest
@@ -136,21 +137,37 @@ class TestHighest(unittest.TestCase):
         self.assertIsNone(feeds.highest("upstream", []))
 
 class TestDebianBeforeRelease(unittest.TestCase):
-    def test_fixed_before_release_uses_lowest_shipped_version(self):
-        # Owner 2026-10-30: fixed in 3.0.9-1 before bookworm; a host on the lower
-        # shipped build 3.0.20-1~deb12u2 must read fixed, not a false alarm.
-        cve, url = "CVE-2026-0002", "https://security-tracker.debian.org/tracker/CVE-2026-0002"
-        row = "<tr><td>{}</td><td>{}</td><td>{}</td><td>fixed</td></tr>"
-        page = ("<h2>Vulnerable and fixed packages</h2><table>" + row.format("openssl", "bookworm", "3.0.20-1~deb12u2")
-                + row.format("", "bookworm (security)", "3.0.22-1~deb12u2") + "</table>data on fixed versions<table>"
-                "<tr><td>openssl</td><td>source</td><td>(unstable)</td><td>3.0.9-1</td><td></td><td></td><td></td></tr></table>")
+    CVE, URL = "CVE-2023-0215", "https://security-tracker.debian.org/tracker/CVE-2023-0215"
+    HIST = "https://snapshot.debian.org/mr/package/openssl/"
+    ROW = "<tr><td>{}</td><td>{}</td><td>{}</td><td>fixed</td></tr>"
+    PAGE = ("<h2>Vulnerable and fixed packages</h2><table>" + ROW.format("openssl", "bookworm", "3.0.20-1~deb12u2")
+            + ROW.format("", "bookworm (security)", "3.0.22-1~deb12u2") + "</table>data on fixed versions<table>"
+            "<tr><td>openssl</td><td>source</td><td>(unstable)</td><td>3.0.8-1</td><td></td><td></td><td></td></tr></table>")
+    VERSIONS = ["3.0.22-1~deb12u2", "3.0.20-1~deb12u2", "3.0.14-1~deb12u2", "3.0.11-1~deb12u1", "3.0.10-1~deb12u1",
+                "3.0.9-1", "3.0.8-1", "3.0.7-1", "1.1.1w-0+deb11u1", "3.5.7-1~deb13u2", "3.0.5-1~deb12u1"]
+
+    def run_one(self, hist):
+        pages = {self.URL: self.PAGE.encode(), **({self.HIST: hist} if hist is not None else {})}
         out = build.Out("2026-10-30")
-        feeds.debian(FakeSnap({url: page.encode()}), cve, "openssl", out, {})
-        (r,) = out.records[(cve, "openssl")].values()
-        self.assertEqual(r["fixed"], "3.0.20-1~deb12u2")
-        self.assertGreaterEqual(compare("vercmp-deb", "3.0.20-1~deb12u2", r["fixed"]), 0)  # reads fixed
-        self.assertTrue(re.match(r["origin"], "3.0.20-1~deb12u2"))
-        self.assertEqual(feeds.highest("vercmp-deb", ["3.0.22-1~deb12u2", "3.0.20-1~deb12u2"], min), "3.0.20-1~deb12u2")
+        feeds.debian(FakeSnap(pages), self.CVE, "openssl", out, {})
+        return out
+
+    def test_fixed_before_release_uses_lowest_published_release_build(self):
+        # Owner's option A, real case: CVE-2023-0215 fixed in 3.0.8-1 before bookworm.
+        # A host on the older bookworm build 3.0.14-1~deb12u2 must read fixed.
+        out = self.run_one(json.dumps({"result": [{"version": v} for v in self.VERSIONS]}).encode())
+        (r,) = out.records[(self.CVE, "openssl")].values()
+        self.assertEqual(r["fixed"], "3.0.10-1~deb12u1")  # 3.0.5-1~deb12u1 is older than the fix; 3.0.9-1 is not ~deb12u
+        host = {"source": "dpkg", "vendor": "debian", "stream": "12", "package": "libssl3", "branch": "3.0",
+                "version": "3.0.14-1~deb12u2", "scheme": "vercmp-deb", "where": "libssl3", "module": "openssl", "db": "host"}
+        from stillmapped.resolve import resolve_one
+        self.assertEqual(resolve_one(host, self.CVE, [{**r, "cve": self.CVE, "module": "openssl"}])["status"], "fixed")
+
+    def test_no_version_list_no_record(self):
+        for hist in (None, b"not json", json.dumps({"result": [{"version": "3.0.9-1"}]}).encode()):
+            out = self.run_one(hist)
+            self.assertFalse(out.records.get((self.CVE, "openssl")))
+            self.assertTrue(any("snapshot.debian.org lists no clean lowest" in sk[4] for sk in out.skips))
 
 
 class TestOracle(unittest.TestCase):
@@ -266,13 +283,13 @@ class TestRealSnapshot(unittest.TestCase):
         for _ in range(2):
             with tempfile.TemporaryDirectory() as d:
                 build.write(build.run(Snapshot(snap)), d)
-                outs.append({f: open(os.path.join(d, f), "rb").read() for f in sorted(os.listdir(d))})
+                outs.append({f: pathlib.Path(d, f).read_bytes() for f in sorted(os.listdir(d))})
         self.assertEqual(outs[0], outs[1])
 
     def test_oracle_reproduces_the_hand_records(self):
         with tempfile.TemporaryDirectory() as d:
             build.write(build.run(Snapshot(os.path.dirname(SNAPS[-1]))), d)
-            hand = os.path.join(os.path.dirname(__file__), "..", "..", "..", "stillmapped", "data", "php2shell.json")
+            hand = os.path.join(os.path.dirname(__file__), "..", "hand", "php2shell.json")
             self.assertEqual(build.oracle(d, hand)[0], [])
 
 
