@@ -12,3 +12,5 @@ build/
 .DS_Store
 # raw feed downloads from sync/ stay local
 sync/cache/
+demo/out/
+demo/cache/

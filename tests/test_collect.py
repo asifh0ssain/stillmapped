@@ -397,5 +397,49 @@ class TestCollect(unittest.TestCase):
         self.assertTrue(any("pid 50" in p for p in problems))
 
 
+class TestPanelRuntime(unittest.TestCase):
+    """Demo 1b: cPanel installs ea-php82-runtime 8.2.35 next to an 8.2.34
+    PHP. The runtime package carries no PHP code. Fixture versions and
+    record only; no real ea-php record exists."""
+
+    RPM = "\n".join([
+        "ea-php82-php-cli\t(none):8.2.34-1.1.1.cpanel",
+        "ea-php82-php-fpm\t(none):8.2.34-1.1.1.cpanel",
+        "ea-php82-runtime\t(none):8.2.35-1.2.1.cpanel",
+    ])
+    RECORD = {"cve": "CVE-TEST-0001", "vendor": "cpanel", "stream": "*", "package": "ea-php82",
+              "branch": "8.2", "match": "vercmp-rpm", "fixed": "8.2.35-1.1.1.cpanel", "status": "fixed",
+              "origin": r"^8\.2\.\d+-\d+\.\d+\.\d+\.cpanel$",
+              "evidence_url": "https://example.invalid/ea4", "checked": "2026-10-29"}
+
+    def report(self):
+        from phpfixed.resolve import resolve
+        root = tempfile.mkdtemp()
+        write(root, "etc/os-release", 'ID=almalinux\nVERSION_ID="9.8"\n')
+        fake_proc(root, 10, "/opt/cpanel/ea-php82/root/usr/sbin/php-fpm")
+        which = {"rpm": "/usr/bin/rpm"}.get
+        with patch.object(c, "_which", side_effect=which), \
+                patch.object(c.os, "geteuid", return_value=0), \
+                patch.object(c, "_root_owned", return_value=True):
+            inv = c.collect(root, fake_runner({"rpm -qa": self.RPM, "rpm -qf": "ea-php82-php-fpm\n"}))
+        return resolve(inv, [self.RECORD], ["CVE-TEST-0001"])
+
+    def test_runtime_fix_record_does_not_fix_cli_or_running_php(self):
+        from phpfixed.resolve import exit_code
+        report = self.report()
+        php = [r for r in report["results"] if "php-cli" in r["build"]["where"]]
+        self.assertEqual([r["status"] for r in php], ["not-fixed"])
+        self.assertIn("php-fpm", php[0]["build"]["where"])  # the running fpm's build
+        self.assertEqual(report["problems"], [])            # pid 10 traced to it
+        self.assertNotEqual(exit_code(report), 0)
+
+    # Open risk 2: the runtime package reads "fixed" next to an unfixed PHP.
+    # Expected failure until step 4.
+    @unittest.expectedFailure
+    def test_runtime_package_never_reads_fixed(self):
+        fixed = [r["build"]["where"] for r in self.report()["results"] if r["status"] == "fixed"]
+        self.assertEqual(fixed, [])
+
+
 if __name__ == "__main__":
     unittest.main()
