@@ -40,8 +40,9 @@ def validate_record(r):
         # A distro fix is often backported onto an older upstream version, so a
         # rebuild with a higher version (or an epoch) would compare as newer.
         # Only the vendor's exact version format, anchored, proves the fix.
-        if r.get("match") != "upstream" and not re.fullmatch(r"\^.*\$", str(r.get("origin", "")), re.S):
-            problems.append("distro record needs an origin pattern anchored with ^ and $")
+        # No "|": "^a|.*$" is anchored at both ends yet matches anything.
+        if r.get("match") != "upstream" and not re.fullmatch(r"\^[^|]*\$", str(r.get("origin", ""))):
+            problems.append("distro record needs an origin pattern anchored with ^ and $, without |")
     elif status == UNKNOWN:
         if not r.get("note"):
             problems.append("unknown record needs a note saying why")
@@ -71,7 +72,7 @@ def load_records(cves=None):
     updates. Any invalid record stops the run: bad data must never produce
     a verdict.
     """
-    records = []
+    records, module = [], {}
     for f in sorted((resources.files("phpfixed") / "data").iterdir(), key=lambda p: p.name):
         if not f.name.endswith(".json"):
             continue
@@ -80,6 +81,8 @@ def load_records(cves=None):
             for cve in doc.get("cves") or [None]:
                 rec = {**r, "cve": cve, "module": doc.get("module", "php")}
                 problems = validate_record(rec)
+                if module.setdefault(cve, rec["module"]) != rec["module"]:  # one CVE, one module
+                    problems.append(f"{cve} is also in a {module[cve]} data file")
                 if problems:
                     raise ValueError(f"{f.name}: {r.get('vendor')}/{r.get('package')} "
                                      f"{r.get('stream')}: {'; '.join(problems)}")

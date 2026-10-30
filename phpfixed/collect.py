@@ -234,18 +234,17 @@ def from_directadmin(root="/"):
 def _php_path(exe, maps):
     """The PHP file a process runs ('(deleted)' kept): its own binary, or a
     PHP module mapped into it. None if it runs no PHP."""
-    name = os.path.basename(exe.removesuffix(" (deleted)"))
+    name = os.path.basename(exe.removesuffix(" (deleted)")).removeprefix("memfd:")
     if _PHP_EXE.match(name):
         return exe
     return next((m[5] for m in maps if _PHP_MODULE.search(m[5])), None)
 
 
 def _lib_file(path, files):
-    """The record file (a soname) whose library a mapped path is, or None.
-    Any copy counts: libcrypto.so.3.5.8, a bundled libcrypto-1a2b3c4d.so.3,
-    /memfd:libcrypto.so.3; libcryptopp.so does not."""
-    name = os.path.basename(path.removesuffix(" (deleted)"))
-    return next((f for f in files if re.search(rf"{re.escape(f.split('.so')[0])}(-[^/]*)?\.so(\.|$)", name)), None)
+    """The record file (a soname) whose library a mapped path is, or None:
+    any name matching libcrypto*.so*, also from a memfd."""
+    name = os.path.basename(path.removesuffix(" (deleted)")).removeprefix("memfd:")
+    return next((f for f in files if re.fullmatch(rf"{re.escape(f.split('.so')[0])}.*\.so.*", name)), None)
 
 
 def _read(d, name):

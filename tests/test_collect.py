@@ -726,10 +726,14 @@ class TestLibraries(unittest.TestCase):
     def test_every_libcrypto_copy_is_a_subject(self):
         # Review #1: a renamed bundled copy (auditwheel) was never looked at.
         files = {"libcrypto.so.3": "openssl"}
+        # Review 3 #9: libcrypto3.so, libcrypto_v.so.3, libcrypto.1.1.so were missed. The rule is
+        # the glob libcrypto*.so*, so Crypto++'s libcryptopp matches too (owned by its package: exit 2).
         for path in ("/usr/lib64/libcrypto.so.3.5.8", "/opt/app/libs/libcrypto-1a2b3c4d.so.3",
-                     "/memfd:libcrypto.so.3 (deleted)", "/usr/lib/libcrypto.so.1.1", "/usr/lib/libcrypto.so"):
+                     "/memfd:libcrypto.so.3 (deleted)", "/usr/lib/libcrypto.so.1.1", "/usr/lib/libcrypto.so",
+                     "/x/libcrypto3.so", "/x/libcrypto3.so.3", "/x/libcryptoossl3.so.3", "/x/libcrypto_v.so.3",
+                     "/x/libcrypto.1.1.so", "/usr/lib/libcryptopp.so.8"):
             self.assertEqual(c._lib_file(path, files), "libcrypto.so.3", path)
-        for path in ("/usr/lib/libcryptopp.so.8", "/usr/lib/libcryptsetup.so.12", "/usr/lib/libcrypto.a"):
+        for path in ("/usr/lib/libcryptsetup.so.12", "/usr/lib/libcrypto.a", "/usr/lib/libcrypt.so.1"):
             self.assertIsNone(c._lib_file(path, files), path)
 
     def test_bundled_copy_is_untraced_and_named(self):
@@ -1298,3 +1302,10 @@ class TestMountNamespace(unittest.TestCase):
                     got, code = self.run_ns(root, view, runner, {"openssl-libs": "openssl"}, rec)
                 self.assertEqual(got, want)
                 self.assertEqual(code, 2 if bound else 0)
+
+    def test_php_run_from_a_memfd_is_seen(self):
+        # Review 3 #9: exe '/memfd:php (deleted)' failed the PHP name match and was ignored.
+        host = TestLibraries.host(None)
+        fake_proc(host, 90, "/memfd:php (deleted)")
+        inv = c.collect(host, fake_runner({}))
+        self.assertTrue(any(p.startswith("pid 90 runs /memfd:php (deleted)") for p in inv["problems"]))
