@@ -110,8 +110,8 @@ def from_dpkg(osr, root="/", libs={}):
     for para in paragraphs:
         f = dict(line.split(": ", 1) for line in para.splitlines()
                  if ": " in line and not line[0].isspace())
-        # Only these two states leave no files on disk. Any other state but
-        # "install ok installed" keeps the build and is a problem.
+        # Only these two states leave no files on disk. Any state other than
+        # installed (held or not) keeps the build and is a problem.
         status = f.get("Status", "")
         if status.split()[-1:] in ([], ["not-installed"], ["config-files"]):
             continue
@@ -133,7 +133,7 @@ def from_dpkg(osr, root="/", libs={}):
             else:
                 vendor, stream = osr
             builds.append(_build("dpkg", vendor, stream, pkg, version, "vercmp-deb", name))
-        if status != "install ok installed":
+        if status not in ("install ok installed", "hold ok installed"):
             problems.append(f"dpkg state of {name} is '{status}', not 'install ok installed'")
     return builds, problems
 

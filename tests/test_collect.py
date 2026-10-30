@@ -133,16 +133,44 @@ class TestDpkg(unittest.TestCase):
                     dpkg_status(("php8.3-fpm", "8.3.6-0ubuntu0.24.04.12", status))))
                 self.assertEqual(len(builds), 1)
 
-    def test_package_not_fully_installed_is_a_problem(self):
-        # Second-review rule: any state but "install ok installed" is a problem, not a pass.
-        for status, problem in (("install ok installed", False), ("hold ok installed", True),
-                                ("install ok half-installed", True), ("install reinstreq installed", True),
-                                ("install ok triggers-pending", True)):
-            for pkg in ("php8.3-fpm", "libssl3"):
-                with self.subTest(status=status, pkg=pkg):
-                    root = root_with_dpkg(dpkg_status((pkg, "8.3.6-0ubuntu0.24.04.12", status)))
-                    builds, problems = c.from_dpkg(("ubuntu", "24.04"), root, {"libssl3": "openssl"})
-                    self.assertEqual((len(builds), bool(problems)), (1, problem))
+    def state(self, status, problem):
+        """Rule: 'install ok installed' and 'hold ok installed' pass; any other
+        state keeps the build and is a problem. PHP and library packages alike."""
+        for pkg in ("php8.3-fpm", "libssl3"):
+            with self.subTest(pkg=pkg):
+                root = root_with_dpkg(dpkg_status((pkg, "8.3.6-0ubuntu0.24.04.12", status)))
+                builds, problems = c.from_dpkg(("ubuntu", "24.04"), root, {"libssl3": "openssl"})
+                self.assertEqual((len(builds), bool(problems)), (1, problem))
+
+    def test_state_install_ok_installed_passes(self):
+        self.state("install ok installed", False)
+
+    def test_state_hold_ok_installed_passes(self):
+        self.state("hold ok installed", False)
+
+    def test_state_half_installed_is_a_problem(self):
+        self.state("install ok half-installed", True)
+
+    def test_state_unpacked_is_a_problem(self):
+        self.state("install ok unpacked", True)
+
+    def test_state_half_configured_is_a_problem(self):
+        self.state("install ok half-configured", True)
+
+    def test_state_triggers_awaited_is_a_problem(self):
+        self.state("install ok triggers-awaited", True)
+
+    def test_state_triggers_pending_is_a_problem(self):
+        self.state("install ok triggers-pending", True)
+
+    def test_state_reinstreq_is_a_problem(self):
+        self.state("install reinstreq installed", True)
+
+    def test_state_deinstall_wanted_is_a_problem(self):
+        self.state("deinstall ok installed", True)
+
+    def test_state_hold_half_configured_is_a_problem(self):
+        self.state("hold ok half-configured", True)
 
     def test_package_without_php_file_is_not_a_build(self):
         # Open risk 2: only a package that installs PHP itself counts.
