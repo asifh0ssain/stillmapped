@@ -14,6 +14,15 @@ v=$(dnf -q --showduplicates list ea-php82-php-cli | awk '/^ea-php82-php-cli/ {pr
 dnf -q -y --setopt=install_weak_deps=False install "ea-php82-php-cli-$v" >/dev/null
 run package sh -c "rpm -qa 'ea-php82*' | sort; /opt/cpanel/ea-php82/root/usr/bin/php -v"
 scan after
+# Which package owns the binary that printed the version, and what the
+# runtime package installs.
+php=/opt/cpanel/ea-php82/root/usr/bin/php
+run php-owner sh -c "ls -l $php; readlink -f $php; rpm -qf $php \$(readlink -f $php)
+case \$(rpm -qf --qf '%{NAME}' \$(readlink -f $php)) in
+  ea-php82-php-cli) echo 'CHECK php binary owned by ea-php82-php-cli: PASS' ;;
+  *) echo 'CHECK php binary owned by ea-php82-php-cli: FAIL' ;;
+esac"
+run runtime-files rpm -ql ea-php82-runtime
 # Did cPanel backport the 8.2.35 fixes into this build? Its changelog says.
 run changelog rpm -q --changelog ea-php82-php-cli ea-php82-runtime
 run changelog-check sh -c "rpm -q --qf '%{NAME}-%{VERSION}-%{RELEASE} built %{BUILDTIME:date}\n' ea-php82-php-cli ea-php82-runtime

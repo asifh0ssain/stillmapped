@@ -35,6 +35,11 @@ No `--privileged`, no host network. The only host mounts are `demo/out` and
 mounts it read-write because it fills it. Scripts and the `phpfixed/` package
 go in with `docker cp`. Scans run with database updates off.
 
+## Platform of the quoted run
+
+The run quoted in the top-level README was on arm64, with the ea-php
+container under amd64 emulation, so the Debian file paths show `aarch64`.
+
 ## Not pinned
 
 The Trivy and Grype databases change daily. Each run records the version and

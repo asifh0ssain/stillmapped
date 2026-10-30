@@ -49,7 +49,7 @@ container ro linux/amd64 almalinux:9 eaphp.sh
 cd "$out"
 {
   cat versions.txt provenance.txt errors.txt 2>/dev/null || true
-  for f in *-maps-*.txt *-hashes.txt stale-needrestart*.txt stale-needrestart-source.txt thirdparty-package.txt eaphp-package.txt eaphp-changelog-check.txt eaphp-grype-db-search.txt eaphp-phpfixed.txt; do
+  for f in *-maps-*.txt *-hashes.txt stale-needrestart*.txt stale-needrestart-source.txt thirdparty-package.txt eaphp-package.txt eaphp-php-owner.txt eaphp-runtime-files.txt eaphp-changelog-check.txt eaphp-grype-db-search.txt eaphp-phpfixed.txt; do
     printf '\n### %s\n' "$f"; cat "$f" 2>/dev/null || echo "(missing)"
   done
   for f in *-trivy-*.txt *-grype-*.txt; do
