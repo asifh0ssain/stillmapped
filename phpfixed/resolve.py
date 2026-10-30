@@ -153,8 +153,8 @@ def resolve(inventory, records, cves):
     for mod in sorted({module[c] for c in cves if c in module}):
         if not any(b["module"] == mod for b in builds):
             problems.append(f"no {'PHP' if mod == 'php' else mod} build found")
-    limits = [f"{f}: dynamically linked copies only; statically linked or embedded copies are not checked"
-              for f in sorted({r["file"] for r in records if r["cve"] in cves and r.get("file")})]
+    limits = [f"{f}: every mapped {f.split('.so')[0]}*.so* file is checked; a copy linked statically "
+              "into a program is not seen" for f in sorted({r["file"] for r in records if r["cve"] in cves and r.get("file")})]
     stale = [w for w in inventory["workers"] if w["stale"]]
     return {"results": results, "stale_workers": stale, "problems": problems, "limits": limits}
 

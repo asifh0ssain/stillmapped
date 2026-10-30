@@ -65,9 +65,9 @@ class TestCli(unittest.TestCase):
         self.assertNotIn("NOT-FIXED", out)
         self.assertIn("pid:    469 maps /usr/lib/x86_64-linux-gnu/libcrypto.so.3 (deleted)", out)
         self.assertIn("container package database", out)
-        self.assertIn("[SCOPE] libcrypto.so.3: dynamically linked copies only", out)
+        self.assertIn("[SCOPE] libcrypto.so.3: every mapped libcrypto*.so* file is checked", out)
         j = json.loads(jout)
-        self.assertTrue(j["limits"][0].startswith("libcrypto.so.3: dynamically linked copies only"))
+        self.assertIn("linked statically into a program is not seen", j["limits"][0])
         self.assertEqual([r["status"] for r in j["results"]], ["fixed", "restart-needed"])
 
 

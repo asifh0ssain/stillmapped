@@ -673,11 +673,29 @@ class TestLibraries(unittest.TestCase):
             r = self.report(root)
         self.assertEqual((self.statuses(r), r["problems"]), ([("fixed", None)], []))
 
-    def test_soname_matches_its_real_file_only(self):
+    def test_every_libcrypto_copy_is_a_subject(self):
+        # Review #1: a renamed bundled copy (auditwheel) was never looked at.
         files = {"libcrypto.so.3": "openssl"}
-        self.assertEqual(c._lib_file("/usr/lib64/libcrypto.so.3.5.8", files), "libcrypto.so.3")
-        self.assertIsNone(c._lib_file("/usr/lib64/libcrypto.so.30", files))
-        self.assertIsNone(c._lib_file("/usr/lib64/libcrypto.so", files))
+        for path in ("/usr/lib64/libcrypto.so.3.5.8", "/opt/app/libs/libcrypto-1a2b3c4d.so.3",
+                     "/memfd:libcrypto.so.3 (deleted)", "/usr/lib/libcrypto.so.1.1", "/usr/lib/libcrypto.so"):
+            self.assertEqual(c._lib_file(path, files), "libcrypto.so.3", path)
+        for path in ("/usr/lib/libcryptopp.so.8", "/usr/lib/libcryptsetup.so.12", "/usr/lib/libcrypto.a"):
+            self.assertIsNone(c._lib_file(path, files), path)
+
+    def test_bundled_copy_is_untraced_and_named(self):
+        from phpfixed.resolve import exit_code
+        root = self.host()
+        fake_proc(root, 16, "/usr/bin/python3", maps=["/opt/app/libs/libcrypto-1a2b3c4d.so.3"])
+        r = self.report(root)
+        self.assertIn("pid 16 runs /opt/app/libs/libcrypto-1a2b3c4d.so.3, which no checked package or build "
+                      "installed: bundled copy, not owned by a package", r["problems"])
+        self.assertEqual(exit_code(r), 2)
+
+    def test_copy_owned_by_a_package_without_record_says_so(self):
+        root = self.host()
+        write(root, "var/lib/dpkg/info/libssl1.1:amd64.list", "/usr/lib/x86_64-linux-gnu/libcrypto.so.1.1\n")
+        fake_proc(root, 17, "/usr/bin/legacy", maps=["/usr/lib/x86_64-linux-gnu/libcrypto.so.1.1"])
+        self.assertTrue(any("owned by libssl1.1:amd64, which no record covers" in p for p in self.report(root)["problems"]))
 
     def test_rpm_library_package_needs_no_php_file(self):
         with patch.object(c, "_which", return_value="/usr/bin/rpm"):
@@ -696,10 +714,10 @@ class TestLibraries(unittest.TestCase):
         self.assertEqual({(x["cve"], x["build"]["package"]) for x in r["results"]}, {("CVE-TEST-0002", "libssl3")})
         self.assertIn("no PHP build found", r["problems"])
 
-    def test_scope_says_dynamically_linked_only(self):
+    def test_scope_names_what_is_checked(self):
         r = self.report(self.host())
-        self.assertEqual(r["limits"], ["libcrypto.so.3: dynamically linked copies only; "
-                                       "statically linked or embedded copies are not checked"])
+        self.assertEqual(r["limits"], ["libcrypto.so.3: every mapped libcrypto*.so* file is checked; "
+                                       "a copy linked statically into a program is not seen"])
 
 
 class TestPackageConsistency(unittest.TestCase):

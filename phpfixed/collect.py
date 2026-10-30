@@ -253,10 +253,11 @@ def _php_path(exe, maps):
 
 
 def _lib_file(path, files):
-    """The record file (a soname) that a mapped path is, or None. Matches
-    libcrypto.so.3 and the real file behind it, libcrypto.so.3.5.8."""
+    """The record file (a soname) whose library a mapped path is, or None.
+    Any copy counts: libcrypto.so.3.5.8, a bundled libcrypto-1a2b3c4d.so.3,
+    /memfd:libcrypto.so.3; libcryptopp.so does not."""
     name = os.path.basename(path.removesuffix(" (deleted)"))
-    return next((f for f in files if name == f or name.startswith(f + ".")), None)
+    return next((f for f in files if re.search(rf"{re.escape(f.split('.so')[0])}(-[^/]*)?\.so(\.|$)", name)), None)
 
 
 def _read(d, name):
@@ -374,6 +375,12 @@ def _tampered(proot, b, path, runner):
     return None
 
 
+def _dpkg_owner(proot, path):
+    """Any dpkg package that lists path, or None."""
+    names = (os.path.basename(f)[:-5] for f in glob.glob(os.path.join(proot, "var/lib/dpkg/info/*.list")))
+    return next((p for p in names if _dpkg_owns(proot, p, path)), None)
+
+
 def _rpm_owner(runner, path):
     """Name of the rpm package that owns path, or None."""
     out = runner(["rpm", "-qf", "--qf", "%{NAME}\n", path])
@@ -452,7 +459,11 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
                 if (key, path, module) not in owners:
                     rpm_name = use_rpm and not in_container and _rpm_owner(runner, path)
                     b = _owner(proot, path, by_root[key], rpm_name, module)
-                    why = owners[key, path, module] = b and _tampered(proot, b, path, runner) or b
+                    why = b and _tampered(proot, b, path, runner) or b
+                    if b is None and module != "php":
+                        other = rpm_name or _dpkg_owner(proot, path)
+                        why = f"owned by {other}, which no record covers" if other else "bundled copy, not owned by a package"
+                    owners[key, path, module] = why
                     if isinstance(why, dict) and (in_container or b["source"] == "source"):
                         extra.append({**b, "where": f"{b['where']} (pid {pid}{', container' if in_container else ''})"})
                 b = owners[key, path, module]
