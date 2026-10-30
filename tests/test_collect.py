@@ -346,7 +346,7 @@ class TestFilesystemSources(unittest.TestCase):
         self.assertIn("php74", problems[0])
 
 
-def fake_proc(root, pid, exe=None, maps=(), proot=None, old=b"old code"):
+def fake_proc(root, pid, exe=None, maps=(), proot=None, old=b"old code", userns="user:[4026531837]"):
     """A /proc/PID entry; proot is the process's root filesystem (a container's).
 
     exe and each path in maps get a maps line and a map_files entry. A
@@ -356,6 +356,11 @@ def fake_proc(root, pid, exe=None, maps=(), proot=None, old=b"old code"):
     d = os.path.join(root, "proc", str(pid))
     os.makedirs(os.path.join(d, "map_files"))
     os.symlink(proot, os.path.join(d, "root"))
+    os.makedirs(os.path.join(d, "ns"))
+    os.symlink(userns, os.path.join(d, "ns/user"))
+    if not os.path.lexists(os.path.join(root, "proc/self/ns/user")):  # the scanner's own
+        os.makedirs(os.path.join(root, "proc/self/ns"), exist_ok=True)
+        os.symlink("user:[4026531837]", os.path.join(root, "proc/self/ns/user"))
     write(root, f"proc/{pid}/stat", f"{pid} (a) b) S {'0 ' * 18}4242 0\n")  # ')' in the name too
     lines = []
     if exe:
@@ -1043,4 +1048,14 @@ class TestReview2(unittest.TestCase):
         with patch.object(c, "running_workers", downgrade_then_walk):
             r, code = self.scan(host)
         self.assertIn("packages changed during the scan; run it again", r["problems"])
+        self.assertEqual(code, 2)
+
+    def test_process_in_another_user_namespace_is_untraced(self):
+        # #5: a plain user's unshare -Urm root with a forged dpkg database read fixed, exit 0.
+        box = TestLibraries.host(None)
+        host = tempfile.mkdtemp()
+        fake_proc(host, 4242, "/usr/bin/openssl", maps=[LIB], proot=box, userns="user:[4026532999]")
+        r, code = self.scan(host)
+        self.assertEqual([x for x in r["results"] if x.get("mapping")], [])
+        self.assertIn(f"pid 4242 runs {LIB} in another user namespace; its packages can't be trusted", r["problems"])
         self.assertEqual(code, 2)

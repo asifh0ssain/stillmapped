@@ -437,6 +437,10 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
     by_root = {host: (list(builds), [])}  # root -> (builds, problems of its package database)
     use_rpm = any(b["source"] == "rpm" for b in builds)
     owners, workers, mappings, extra, unreadable = {}, [], [], [], 0
+    try:
+        userns = os.readlink(os.path.join(proc, "self/ns/user"))
+    except OSError:
+        userns = None
     for pid in sorted((p for p in os.listdir(proc) if p.isdigit()), key=int):
         proot = os.path.join(proc, pid, "root")
         try:
@@ -447,6 +451,9 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
         try:
             start = _read(d, "stat").rsplit(")", 1)[1].split()[19]
             exe = os.readlink("exe", dir_fd=d)
+            # In another user namespace (unshare -U, rootless Docker or Podman) a
+            # plain user owns the root and can write its package database.
+            foreign = os.readlink("ns/user", dir_fd=d) != userns
             maps = [m for m in (line.split(None, 5) for line in _read(d, "maps").splitlines())
                     if len(m) == 6 and m[5].startswith("/")]
             php = _php_path(exe, maps)
@@ -455,6 +462,9 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
                 subjects[None, None, php] = None
             st = os.stat(proot) if subjects else None
             for (_, _, mapped), line in subjects.items():
+                if foreign:
+                    notes.append(f"pid {pid} runs {mapped} in another user namespace; its packages can't be trusted")
+                    continue
                 key, path = (st.st_dev, st.st_ino), mapped.removesuffix(" (deleted)")
                 in_container = key != host
                 module = "php" if mapped == php else files[_lib_file(path, files)]
