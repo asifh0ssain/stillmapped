@@ -1,0 +1,14 @@
+{
+  "name": "openssl-demo",
+  "module": "openssl",
+  "advisory": "https://security-tracker.debian.org/tracker/CVE-2024-6119",
+  "cves": ["CVE-2024-6119"],
+  "note": "Demo fixture only: deb.sh copies it into the demo container's phpfixed/data. It is not part of the package. The fix is in libcrypto.so.3; libssl.so.3 is byte-identical in both versions.",
+  "records": [
+    {"vendor": "debian", "stream": "12", "package": "libssl3", "branch": "3.0", "file": "libcrypto.so.3",
+     "match": "vercmp-deb", "fixed": "3.0.14-1~deb12u2", "status": "fixed",
+     "origin": "^3\\.0\\.\\d+-\\d+~deb12u\\d+$",
+     "evidence_url": "https://security-tracker.debian.org/tracker/CVE-2024-6119",
+     "evidence": "openssl source bookworm 3.0.14-1~deb12u2, DSA-5764-1", "checked": "2026-10-30"}
+  ]
+}

@@ -8,11 +8,18 @@
 # is byte-identical in both versions. Hashes below show which code is which.
 set -eu
 MODE=$1
+mkdir -p /phpfixed/data && cp /openssl-demo.json /phpfixed/data/
 ARCH=$(dpkg --print-architecture)
 OLD=3.0.14-1~deb12u1
 NEW=3.0.14-1~deb12u2
 . /scan.sh
 deb() { echo "/cache/$1_$2_$ARCH.deb"; }
+phpfixed() { # expected-exit pid: run phpfixed here and check its verdict (check.py)
+  rc=0
+  (cd / && python3 -m phpfixed --cve CVE-2024-6119 --json) > /tmp/pf.json || rc=$?
+  { echo "\$ python3 -m phpfixed --cve CVE-2024-6119 --json   (exit $rc)"; cat /tmp/pf.json
+    python3 /check.py "$rc" "$1" "$2" /tmp/pf.json || echo "CHECK FAIL (check.py error)"; } > "/out/$MODE-phpfixed.txt" 2>&1
+}
 dpkg-deb -x "$(deb libssl3 $OLD)" /tmp/official-old
 dpkg-deb -x "$(deb libssl3 $NEW)" /tmp/official-new
 hashes() { # sha256 of each library: on disk now, in the official old and new packages
@@ -23,7 +30,7 @@ hashes() { # sha256 of each library: on disk now, in the official old and new pa
 
 if [ "$MODE" = stale ]; then
   apt-get update -qq
-  NEEDRESTART_SUSPEND=1 apt-get install -y -qq --no-install-recommends needrestart procps >/dev/null
+  NEEDRESTART_SUSPEND=1 apt-get install -y -qq --no-install-recommends needrestart procps python3 >/dev/null
   dpkg -i "$(deb libssl3 $OLD)" "$(deb openssl $OLD)" >/dev/null
   cd /tmp
   openssl req -x509 -newkey rsa:2048 -nodes -keyout k -out c -subj /CN=demo -days 1 2>/dev/null
@@ -37,6 +44,7 @@ if [ "$MODE" = stale ]; then
   run maps-after sh -c "dpkg-query -W libssl3 openssl; ps -o pid,lstart,args -p $pid; grep -E 'libssl|libcrypto' /proc/$pid/maps | sort -u -k6"
   scan after
   run hashes hashes
+  phpfixed 1 "$pid"
   run needrestart-batch needrestart -b -r l
   run needrestart-verbose needrestart -v -r l
   # What needrestart decides from: deleted or replaced mappings, no CVE data.
@@ -53,10 +61,13 @@ else
       /tmp/$p/DEBIAN/control
     dpkg-deb -b /tmp/$p /tmp/$p.deb >/dev/null
   done
+  apt-get update -qq
+  apt-get install -y -qq --no-install-recommends python3 >/dev/null
   dpkg -i /tmp/libssl3.deb /tmp/openssl.deb >/dev/null
   run package sh -c "dpkg-query -W -f '\${Package} \${Version} \${Maintainer}\n' libssl3 openssl
 dpkg --compare-versions 3.0.14-1+thirdparty1 gt $NEW && echo 'dpkg: 3.0.14-1+thirdparty1 > $NEW'
 "
   run hashes hashes
   scan after
+  phpfixed 2 none
 fi

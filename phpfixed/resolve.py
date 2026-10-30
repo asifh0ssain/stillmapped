@@ -12,7 +12,7 @@ from importlib import resources
 
 from .vercmp import SCHEMES, branch, compare
 
-FIXED, NOT_FIXED, UNKNOWN = "fixed", "not-fixed", "unknown"
+FIXED, NOT_FIXED, UNKNOWN, RESTART = "fixed", "not-fixed", "unknown", "restart-needed"
 
 # 'branch' is mandatory: RHEL ships several PHP branches all named "php", and
 # without it an 8.3 build could be compared against an 8.2 fix and pass.
@@ -53,6 +53,10 @@ def validate_record(r):
                 problems.append(f"fixed version {r['fixed']} doesn't match its own origin")
         except (re.error, TypeError):
             problems.append(f"bad origin pattern {r['origin']!r}")
+    # A library record names the file that carries the fix: a soname, never a path.
+    f = r.get("file")
+    if r.get("module", "php") != "php" and not (isinstance(f, str) and re.fullmatch(r"[A-Za-z0-9][\w.+-]*", f, re.A)):
+        problems.append("library record needs a file: a soname such as libcrypto.so.3")
     if not str(r.get("evidence_url", "")).startswith("https://"):
         problems.append("evidence_url must be https")
     if not _is_date(r.get("checked")):
@@ -74,7 +78,7 @@ def load_records(cves=None):
         doc = json.loads(f.read_text(encoding="utf-8"))
         for r in doc.get("records", []):
             for cve in doc.get("cves") or [None]:
-                rec = {**r, "cve": cve}
+                rec = {**r, "cve": cve, "module": doc.get("module", "php")}
                 problems = validate_record(rec)
                 if problems:
                     raise ValueError(f"{f.name}: {r.get('vendor')}/{r.get('package')} "
@@ -129,17 +133,37 @@ def resolve_one(build, cve, records):
     return {**base, "status": FIXED, "reason": f"{build['version']} >= {rec['fixed']}"}
 
 
+def resolve_mapping(m, cve, records):
+    """Verdict for a library file mapped into a process, or None when no
+    record for cve names that file."""
+    recs = [r for r in records if r["cve"] == cve and r.get("file") == m["file"]]
+    if not recs:
+        return None
+    one = {**resolve_one(m["build"], cve, recs), "mapping": m}
+    # Code that differs from the installed file came from some earlier version.
+    return one if m["same"] else {**one, "status": RESTART, "reason": "in-memory version unknown, restart needed"}
+
+
 def resolve(inventory, records, cves):
-    results = [resolve_one(b, cve, records) for b in inventory["builds"] for cve in cves]
+    module = {r["cve"]: r["module"] for r in records}
+    builds = inventory["builds"]
+    results = [resolve_one(b, cve, records) for b in builds for cve in cves if b["module"] == module.get(cve)]
+    results += [r for m in inventory.get("mappings", []) for cve in cves if (r := resolve_mapping(m, cve, records))]
+    problems = list(inventory.get("problems", []))
+    for mod in sorted({module[c] for c in cves if c in module}):
+        if not any(b["module"] == mod for b in builds):
+            problems.append(f"no {'PHP' if mod == 'php' else mod} build found")
+    limits = [f"{f}: dynamically linked copies only; statically linked or embedded copies are not checked"
+              for f in sorted({r["file"] for r in records if r["cve"] in cves and r.get("file")})]
     stale = [w for w in inventory["workers"] if w["stale"]]
-    return {"results": results, "stale_workers": stale, "problems": inventory.get("problems", [])}
+    return {"results": results, "stale_workers": stale, "problems": problems, "limits": limits}
 
 
 def exit_code(report):
-    """0 all fixed, 1 something not fixed or stale workers, 2 something
+    """0 all fixed, 1 something not fixed or needing a restart, 2 something
     unknown or part of the host not checked."""
     statuses = {r["status"] for r in report["results"]}
-    if NOT_FIXED in statuses or report["stale_workers"]:
+    if NOT_FIXED in statuses or RESTART in statuses or report["stale_workers"]:
         return 1
     if UNKNOWN in statuses or report["problems"]:
         return 2

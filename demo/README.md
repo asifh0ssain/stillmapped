@@ -24,14 +24,16 @@ on disk. Results go to `demo/out/<UTC time>/`: one file per command, and
 | Script | Container | Does |
 |---|---|---|
 | `prep.sh` | debian:12 | Downloads OpenSSL 3.0.14-1~deb12u1 (vulnerable to CVE-2024-6119) and 3.0.14-1~deb12u2 (fixed). Checks each `.deb` against the SHA256 in the gpgv-verified InRelease and Packages files of the same snapshot. Downloads Trivy and Grype by pinned SHA256, then their databases. |
-| `deb.sh stale` | debian:12 | Installs the vulnerable version, starts `openssl s_server`, upgrades without a restart, scans before and after. Records `/proc/PID/maps`, library hashes, needrestart output and the needrestart source lines it decides from. |
-| `deb.sh thirdparty` | debian:12 | Rebuilds the vulnerable packages as version `3.0.14-1+thirdparty1`, installs them, scans. |
+| `deb.sh stale` | debian:12 | Installs the vulnerable version, starts `openssl s_server`, upgrades without a restart, scans before and after. Records `/proc/PID/maps`, library hashes, needrestart output and the needrestart source lines it decides from. Runs phpfixed with the demo-only record `openssl-demo.json`; `check.py` requires exit 1 and "in-memory version unknown, restart needed" for the server's libcrypto. |
+| `deb.sh thirdparty` | debian:12 | Rebuilds the vulnerable packages as version `3.0.14-1+thirdparty1`, installs them, scans. Runs phpfixed; `check.py` requires exit 2, `unknown`, and no `fixed` verdict. |
 | `eaphp.sh` | almalinux:9 (amd64) | Installs the oldest `ea-php82-php-cli` that EA4 serves, records its rpm changelog, scans, searches the Grype database for CVE-2026-109618, runs the current phpfixed. phpfixed must answer `unknown` with exit 2. |
 
 ## Isolation
 
-No `--privileged`, no host network. The only host mounts are `demo/out` and
-`demo/cache`. The cache is read-only in the three test containers. `prep.sh`
+No `--privileged`, no host network. One added capability,
+`CHECKPOINT_RESTORE`, lets phpfixed read `/proc/PID/map_files` inside the
+containers; on a host it runs as root and needs none. The only host mounts are
+`demo/out` and `demo/cache`. The cache is read-only in the three test containers. `prep.sh`
 mounts it read-write because it fills it. Scripts and the `phpfixed/` package
 go in with `docker cp`. Scans run with database updates off.
 

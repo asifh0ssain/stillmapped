@@ -5,7 +5,8 @@
 #
 # Needs only docker. Downloads public images, Debian snapshot packages,
 # pinned Trivy and Grype releases with their databases, and cPanel's public
-# EA4 repository. Containers run unprivileged on the default bridge network.
+# EA4 repository. Containers run on the default bridge network with one added
+# capability, CHECKPOINT_RESTORE, so phpfixed can read /proc/PID/map_files.
 # The only host mounts are demo/out (results) and demo/cache (read-only,
 # except for the download step that fills it). Scripts and the phpfixed
 # package are copied in with docker cp.
@@ -28,9 +29,10 @@ docker pull -q --platform linux/amd64 almalinux:9 >/dev/null
 container() { # cache-mode platform image script args...
   local mode=$1 platform=$2 image=$3 cid rc=0
   shift 3
-  cid=$(docker create --platform "$platform" -v "$out:/out" -v "$here/cache:/cache:$mode" \
+  cid=$(docker create --platform "$platform" --cap-add CHECKPOINT_RESTORE \
+    -v "$out:/out" -v "$here/cache:/cache:$mode" \
     "$image" sh "/$@")
-  for f in prep.sh scan.sh deb.sh eaphp.sh; do docker cp -q "$here/$f" "$cid:/$f"; done
+  for f in prep.sh scan.sh deb.sh eaphp.sh check.py openssl-demo.json; do docker cp -q "$here/$f" "$cid:/$f"; done
   docker cp -q "$repo/phpfixed" "$cid:/phpfixed"
   docker start -a "$cid" || rc=$?
   docker rm -f "$cid" >/dev/null
@@ -51,6 +53,9 @@ cd "$out"
   cat versions.txt provenance.txt errors.txt 2>/dev/null || true
   for f in *-maps-*.txt *-hashes.txt stale-needrestart*.txt stale-needrestart-source.txt thirdparty-package.txt eaphp-package.txt eaphp-php-owner.txt eaphp-runtime-files.txt eaphp-changelog-check.txt eaphp-grype-db-search.txt eaphp-phpfixed.txt; do
     printf '\n### %s\n' "$f"; cat "$f" 2>/dev/null || echo "(missing)"
+  done
+  for f in stale-phpfixed.txt thirdparty-phpfixed.txt; do
+    printf '\n### %s (CHECK line)\n' "$f"; grep '^CHECK' "$f" 2>/dev/null || echo "(missing)"
   done
   for f in *-trivy-*.txt *-grype-*.txt; do
     printf '\n### %s (CVE-2024-6119, ea-php and php rows)\n' "$f"

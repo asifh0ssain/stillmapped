@@ -30,12 +30,14 @@ RECORDS = [
      "match": "vercmp-rpm", "fixed": "8.2.35-1.module+el9.8.0+25111+a1450321", "status": "fixed",
      "origin": r"^8\.2\.\d+-\d+\.module\+el9\.", "evidence_url": "https://example.invalid/rhsa", "checked": "2026-10-21"},
 ]
+RECORDS = [{**r, "module": "php"} for r in RECORDS]
 UPSTREAM_85 = RECORDS[4]
 
 
 def b(vendor, stream, package, version, scheme):
     return {"source": "test", "vendor": vendor, "stream": stream, "package": package,
-            "branch": branch(version), "version": version, "scheme": scheme, "where": "test"}
+            "branch": branch(version), "version": version, "scheme": scheme, "where": "test",
+            "module": "php", "db": "host"}
 
 
 def up(version):
@@ -150,6 +152,14 @@ class TestBundledData(unittest.TestCase):
                       validate_record({**RECORDS[0], "origin": "ubuntu"}))
         self.assertEqual(validate_record(UPSTREAM_85), [])  # upstream versions need no origin
 
+    def test_validator_library_record_needs_soname(self):
+        lib = {**RECORDS[0], "module": "openssl", "file": "libcrypto.so.3", "origin": UBUNTU_2404}
+        self.assertEqual(validate_record(lib), [])
+        for bad in (None, 3, "", "../libcrypto.so.3", "/usr/lib/libcrypto.so.3", "libcrypto*", ".hidden",
+                    "libcrypto.so.3\n", "libcr\u00fdpto.so.3"):
+            with self.subTest(file=bad):
+                self.assertTrue(validate_record({**lib, "file": bad}))
+
     def test_validator_unknown_needs_note(self):
         bad = {k: v for k, v in RECORDS[2].items() if k != "note"}
         self.assertIn("unknown record needs a note saying why", validate_record(bad))
@@ -206,8 +216,9 @@ class TestExitCode(unittest.TestCase):
         self.assertEqual(exit_code(r), 1)
 
     def test_no_php_is_a_problem_not_a_pass(self):
-        # Review: an empty host exited 0. collect() reports it as a problem.
-        self.assertEqual(exit_code(self.report([], problems=["no PHP build found"])), 2)
+        # Review: an empty host exited 0. Now checked per module of the CVEs asked.
+        r = self.report([])
+        self.assertEqual((r["problems"], exit_code(r)), (["no PHP build found"], 2))
 
 
 if __name__ == "__main__":

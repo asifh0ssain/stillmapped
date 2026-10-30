@@ -23,7 +23,9 @@ def _table(inv, report):
     for r in report["results"]:
         b = r["build"]
         print(f"\n[{r['status'].upper()}] {r['cve']}  {b['vendor']}/{_safe(b['package'])} {_safe(b['version'])}")
-        print(f"  from:   {b['source']} ({_safe(b['where'])})")
+        print(f"  from:   {b['source']}, {b['db']} package database ({_safe(b['where'])})")
+        if r.get("mapping"):
+            print(f"  pid:    {r['mapping']['pid']} maps {_safe(r['mapping']['path'])}")
         print(f"  why:    {_safe(r['reason'])}")
         if r["record"]:
             print(f"  source: {r['record']['evidence_url']} (checked {r['record']['checked']})")
@@ -34,6 +36,8 @@ def _table(inv, report):
         print("\n[NOT FULLY CHECKED]")
         for p in report["problems"]:
             print(f"  - {_safe(p)}")
+    for limit in report["limits"]:
+        print(f"\n[SCOPE] {limit}")
     print("\nVendor data changes fast. Confirm any result against the linked advisory.")
 
 
@@ -54,7 +58,8 @@ def main(argv=None):
         if not cves or missing:
             print(f"phpfixed: no bundled data for {', '.join(missing) or 'any CVE'}", file=sys.stderr)
             return 3
-        inv = collect()
+        inv = collect(libs={r["package"]: r["module"] for r in records if r.get("file")},
+                      files={r["file"]: r["module"] for r in records if r.get("file")})
         report = resolve(inv, records, cves)
     except Exception as e:  # report, don't traceback, on a production host
         print(f"phpfixed: error: {_safe(e)}", file=sys.stderr)

@@ -172,8 +172,16 @@ class TestRpm(unittest.TestCase):
         self.assertEqual(len(problems), 1)
 
     def test_rpm_file_list_failure_is_a_problem(self):
-        builds, problems = c.from_rpm(("almalinux", "9"), fake_runner({"rpm -qa": RPM_OUT}))
-        self.assertEqual((builds, len(problems)), ([], 1))
+        for files in (None, ""):  # demo run 8: a bad --qf made rpm print nothing, exit 0
+            with self.subTest(files=files):
+                builds, problems = c.from_rpm(("almalinux", "9"), fake_runner({"rpm -qa": RPM_OUT, "rpm -q": files}))
+                self.assertEqual((builds, len(problems)), ([], 1))
+
+    def test_rpm_file_query_repeats_the_name_per_file(self):
+        # Real rpm (EL9) rejects [%{NAME}\t%{FILENAMES}] as different-sized arrays.
+        seen = []
+        c.from_rpm(("almalinux", "9"), lambda cmd: seen.append(cmd) or (RPM_OUT if "-qa" in cmd else RPM_FILES))
+        self.assertIn("[%{=NAME}\t%{FILENAMES}\n]", seen[1])
 
     def test_branch_ignores_epoch(self):
         self.assertEqual(c.branch("1:7.4.33-31+0~20261021"), "7.4")
@@ -283,15 +291,32 @@ class TestFilesystemSources(unittest.TestCase):
         self.assertIn("php74", problems[0])
 
 
-def fake_proc(root, pid, exe=None, maps="", proot=None):
-    """A /proc/PID entry; proot is the process's root filesystem (a container's)."""
+def fake_proc(root, pid, exe=None, maps=(), proot=None, old=b"old code"):
+    """A /proc/PID entry; proot is the process's root filesystem (a container's).
+
+    exe and each path in maps get a maps line and a map_files entry. A
+    missing file is created in proot. A path ending in ' (deleted)' maps
+    another inode holding `old`, as after an upgrade."""
+    proot = proot or root
     d = os.path.join(root, "proc", str(pid))
-    os.makedirs(d)
+    os.makedirs(os.path.join(d, "map_files"))
+    os.symlink(proot, os.path.join(d, "root"))
+    write(root, f"proc/{pid}/stat", f"{pid} (a) b) S {'0 ' * 18}4242 0\n")  # ')' in the name too
+    lines = []
     if exe:
         os.symlink(exe, os.path.join(d, "exe"))
-    os.symlink(proot or root, os.path.join(d, "root"))
-    with open(os.path.join(d, "maps"), "w") as fh:
-        fh.write(maps)
+    for i, p in enumerate(([exe] if exe else []) + list(maps)):
+        path, deleted = p.removesuffix(" (deleted)"), p.endswith(" (deleted)")
+        disk = os.path.join(proot, path.lstrip("/"))
+        if not os.path.exists(disk):
+            write(proot, path.lstrip("/"), "installed code")
+        st = os.stat(disk)
+        rng = f"7f{i:02x}0000-7f{i:02x}1000"
+        lines.append(f"{rng} r-xp 00000000 {os.major(st.st_dev):02x}:{os.minor(st.st_dev):02x} "
+                     f"{st.st_ino + deleted}   {p}")
+        with open(os.path.join(d, "map_files", rng), "wb") as fh, open(disk, "rb") as src:
+            fh.write(old if deleted else src.read())
+    write(root, f"proc/{pid}/maps", "\n".join(lines) + "\n")
     return d
 
 
@@ -306,10 +331,6 @@ def ubuntu_host():
     return root
 
 
-def mapped(path):
-    return f"7f00-7f01 r-xp 00000000 08:01 1234   {path}\n"
-
-
 class TestWorkers(unittest.TestCase):
     def setUp(self):
         self.root = ubuntu_host()
@@ -320,7 +341,7 @@ class TestWorkers(unittest.TestCase):
             self.addCleanup(p.stop)
 
     def workers(self, runner=fake_runner({})):
-        return c.running_workers(self.root, self.builds, runner)
+        return c.running_workers(self.root, self.builds, runner)[:3]
 
     def test_stale_worker(self):
         fake_proc(self.root, 101, "/usr/sbin/php-fpm8.3 (deleted)")
@@ -334,8 +355,8 @@ class TestWorkers(unittest.TestCase):
     def test_apache_mod_php(self):
         # Audit: Apache running mod_php used to be ignored, so a stale
         # libphp after an upgrade went unreported.
-        fake_proc(self.root, 200, "/usr/sbin/apache2", maps=mapped("/usr/lib/apache2/modules/libphp8.3.so (deleted)"))
-        fake_proc(self.root, 201, "/usr/sbin/apache2", maps=mapped("/usr/lib/x.so"))
+        fake_proc(self.root, 200, "/usr/sbin/apache2", maps=["/usr/lib/apache2/modules/libphp8.3.so (deleted)"])
+        fake_proc(self.root, 201, "/usr/sbin/apache2", maps=["/usr/lib/x.so"])
         procs, _, problems = self.workers()
         self.assertEqual([(p["pid"], p["stale"]) for p in procs], [("200", True)])
         self.assertEqual(problems, [])
@@ -346,7 +367,7 @@ class TestWorkers(unittest.TestCase):
             self.builds = c.from_rpm(("sles", "15.7"), fake_runner(
                 {"rpm -qa": "apache2-mod_php8\t(none):8.3.36-150700.3.24.1", "rpm -q": RPM_FILES}))[0]
         self.assertEqual([b["package"] for b in self.builds], ["php8"])
-        fake_proc(self.root, 300, "/usr/sbin/httpd-prefork", maps=mapped("/usr/lib64/apache2/mod_php8.so (deleted)"))
+        fake_proc(self.root, 300, "/usr/sbin/httpd-prefork", maps=["/usr/lib64/apache2/mod_php8.so (deleted)"])
         procs, _, problems = self.workers(fake_runner({"rpm -qf": "apache2-mod_php8\n"}))
         self.assertEqual([(p["pid"], p["stale"]) for p in procs], [("300", True)])
         self.assertEqual(problems, [])
@@ -363,7 +384,7 @@ class TestWorkers(unittest.TestCase):
         # apxs-installed libphp.so, because only the path prefix was checked.
         fake_proc(self.root, 42, "/usr/local/bin/php-fpm")
         fake_proc(self.root, 43, "/usr/local/php83/sbin/php-fpm")
-        fake_proc(self.root, 44, "/usr/sbin/apache2", maps=mapped("/usr/lib/apache2/modules/libphp.so"))
+        fake_proc(self.root, 44, "/usr/sbin/apache2", maps=["/usr/lib/apache2/modules/libphp.so"])
         procs, _, problems = self.workers()
         self.assertEqual(procs, [])
         self.assertEqual(len(problems), 3)
@@ -428,9 +449,11 @@ class TestCollect(unittest.TestCase):
 
     def test_no_php_is_a_problem(self):
         # Review: a host with nothing found exited 0.
+        from phpfixed.resolve import load_records, resolve
         os.remove(os.path.join(self.root, "var/lib/dpkg/status"))
         fake_proc(self.root, 50, "/usr/sbin/php-fpm8.3")
-        problems = c.collect(self.root, fake_runner({}))["problems"]
+        inv = c.collect(self.root, fake_runner({}))
+        problems = resolve(inv, load_records(), ["CVE-2026-109618"])["problems"]
         self.assertIn("no PHP build found", problems)
         self.assertTrue(any("pid 50" in p for p in problems))
 
@@ -448,7 +471,7 @@ class TestPanelRuntime(unittest.TestCase):
     RECORD = {"cve": "CVE-TEST-0001", "vendor": "cpanel", "stream": "*", "package": "ea-php82",
               "branch": "8.2", "match": "vercmp-rpm", "fixed": "8.2.35-1.1.1.cpanel", "status": "fixed",
               "origin": r"^8\.2\.\d+-\d+\.\d+\.\d+\.cpanel$",
-              "evidence_url": "https://example.invalid/ea4", "checked": "2026-10-29"}
+              "evidence_url": "https://example.invalid/ea4", "checked": "2026-10-29", "module": "php"}
 
     FILES = "\n".join([
         "ea-php82-php-cli\t/opt/cpanel/ea-php82/root/usr/bin/php",
@@ -490,3 +513,179 @@ class TestPanelRuntime(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+OPENSSL = {"cve": "CVE-TEST-0002", "module": "openssl", "vendor": "debian", "stream": "12",
+           "package": "libssl3", "branch": "3.0", "file": "libcrypto.so.3", "match": "vercmp-deb",
+           "fixed": "3.0.14-1~deb12u2", "status": "fixed", "origin": r"^3\.0\.\d+-\d+~deb12u\d+$",
+           "evidence_url": "https://example.invalid/dsa", "checked": "2026-10-29"}
+LIB = "/usr/lib/x86_64-linux-gnu/libcrypto.so.3"
+
+
+class TestLibraries(unittest.TestCase):
+    """Library files named by records, traced from /proc/PID/maps."""
+
+    def setUp(self):
+        for p in (patch.object(c, "_which", return_value=None),
+                  patch.object(c.os, "geteuid", return_value=0)):
+            p.start()
+            self.addCleanup(p.stop)
+
+    def host(self, version="3.0.14-1~deb12u2", root=None, lst=LIB):
+        root = root or tempfile.mkdtemp()
+        write(root, "etc/os-release", 'ID=debian\nVERSION_ID="12"\n')
+        write(root, "var/lib/dpkg/status", dpkg_status(("libssl3", version, OK)))
+        write(root, "var/lib/dpkg/info/libssl3:amd64.list", f"/.\n{lst}\n")
+        return root
+
+    def report(self, root):
+        from phpfixed.resolve import resolve
+        inv = c.collect(root, fake_runner({}), libs={"libssl3": "openssl"}, files={"libcrypto.so.3": "openssl"})
+        return resolve(inv, [OPENSSL], ["CVE-TEST-0002"])
+
+    def statuses(self, report):
+        return [(r["status"], r.get("mapping", {}).get("pid")) for r in report["results"]]
+
+    def test_mapped_old_code_is_restart_needed_not_not_fixed(self):
+        from phpfixed.resolve import exit_code
+        root = self.host()
+        fake_proc(root, 469, "/usr/bin/openssl", maps=[LIB + " (deleted)"])
+        r = self.report(root)
+        m = next(x for x in r["results"] if x.get("mapping"))
+        self.assertEqual((m["status"], m["reason"]), ("restart-needed", "in-memory version unknown, restart needed"))
+        self.assertNotEqual(m["mapping"]["mapped_sha256"], m["mapping"]["installed_sha256"])
+        self.assertEqual((m["build"]["version"], m["record"]["evidence_url"], m["mapping"]["start"]),
+                         ("3.0.14-1~deb12u2", "https://example.invalid/dsa", "4242"))
+        self.assertEqual(exit_code(r), 1)
+
+    def test_identical_bytes_after_reinstall_is_fixed(self):
+        # A deleted mapping is not old code by itself: libssl.so.3 was byte-identical in the demo.
+        from phpfixed.resolve import exit_code
+        root = self.host()
+        fake_proc(root, 5, "/usr/bin/openssl", maps=[LIB + " (deleted)"], old=b"installed code")
+        r = self.report(root)
+        self.assertEqual(self.statuses(r), [("fixed", None), ("fixed", "5")])
+        self.assertEqual(exit_code(r), 0)
+
+    def test_deleted_suffix_alone_decides_nothing(self):
+        # A file literally named '... (deleted)' with the installed inode is the installed file.
+        root = self.host()
+        d = fake_proc(root, 6, "/usr/bin/openssl", maps=[LIB + " (deleted)"])
+        st = os.stat(os.path.join(root, LIB.lstrip("/")))
+        with open(os.path.join(d, "maps")) as fh:
+            text = fh.read().replace(f" {st.st_ino + 1} ", f" {st.st_ino} ")
+        write(root, "proc/6/maps", text)
+        self.assertEqual(self.statuses(self.report(root))[1], ("fixed", "6"))
+
+    def test_unreadable_mapped_file_is_unknown_never_fixed(self):
+        from phpfixed.resolve import exit_code
+        root = self.host()
+        d = fake_proc(root, 7, "/usr/bin/openssl", maps=[LIB + " (deleted)"])
+        for f in os.listdir(os.path.join(d, "map_files")):
+            os.remove(os.path.join(d, "map_files", f))
+        r = self.report(root)
+        self.assertEqual(self.statuses(r), [("fixed", None)])
+        self.assertTrue(any("pid 7: can't compare" in p for p in r["problems"]))
+        self.assertEqual(exit_code(r), 2)
+
+    def test_oversize_mapped_file_is_unknown(self):
+        root = self.host()
+        fake_proc(root, 8, "/usr/bin/openssl", maps=[LIB + " (deleted)"])
+        with patch.object(c, "MAX_READ", 3):
+            self.assertTrue(any("pid 8: can't compare" in p for p in self.report(root)["problems"]))
+
+    def test_map_files_name_drops_zero_padding(self):
+        root = self.host()
+        d = fake_proc(root, 9, "/usr/bin/openssl", maps=[LIB + " (deleted)"])
+        with open(os.path.join(d, "maps")) as fh:
+            write(root, "proc/9/maps", fh.read().replace("7f000000-7f001000", "00400000-00452000"))
+        os.rename(os.path.join(d, "map_files", "7f000000-7f001000"), os.path.join(d, "map_files", "400000-452000"))
+        self.assertEqual(self.statuses(self.report(root))[1], ("restart-needed", "9"))
+
+    def test_untraced_library_is_a_problem(self):
+        from phpfixed.resolve import exit_code
+        root = self.host()
+        fake_proc(root, 10, "/opt/app/bin/app", maps=["/opt/app/lib/libcrypto.so.3"])
+        r = self.report(root)
+        self.assertTrue(any("pid 10 runs /opt/app/lib/libcrypto.so.3" in p for p in r["problems"]))
+        self.assertEqual(exit_code(r), 2)
+
+    def test_merged_usr_list_path_resolved_in_process_root(self):
+        # dpkg lists /lib/...; the kernel shows /usr/lib/... because /lib -> usr/lib.
+        for target in ("usr/lib", "/usr/lib"):  # relative, and absolute inside the root
+            with self.subTest(target=target):
+                root = self.host(lst="/lib/x86_64-linux-gnu/libcrypto.so.3")
+                os.symlink(target, os.path.join(root, "lib"))
+                fake_proc(root, 11, "/usr/bin/openssl", maps=[LIB])
+                r = self.report(root)
+                self.assertEqual((self.statuses(r)[1], r["problems"]), (("fixed", "11"), []))
+
+    def test_symlink_loop_in_root_is_untraced(self):
+        root = self.host(lst="/lib/x86_64-linux-gnu/libcrypto.so.3")
+        os.symlink("lib", os.path.join(root, "lib"))
+        self.assertIsNone(c._in_root(root, "/lib/x86_64-linux-gnu/libcrypto.so.3"))
+
+    def test_absolute_symlink_stays_inside_process_root(self):
+        box = tempfile.mkdtemp()
+        os.makedirs(os.path.join(box, "usr/lib"))
+        os.symlink("/usr/lib", os.path.join(box, "lib"))
+        os.symlink("/etc", os.path.join(box, "usr/lib/up"))
+        self.assertEqual(c._in_root(box, "/lib/up/../x"), "/x")
+        self.assertEqual(c._in_root(box, "/lib/../../../etc/passwd"), "/etc/passwd")
+
+    def test_receipt_names_package_database(self):
+        root = self.host()
+        box = self.host(version="3.0.14-1~deb12u1")
+        fake_proc(root, 12, "/usr/bin/openssl", maps=[LIB])
+        fake_proc(root, 13, "/usr/bin/openssl", maps=[LIB], proot=box)
+        got = {r["mapping"]["pid"]: (r["status"], r["build"]["db"]) for r in self.report(root)["results"]
+               if r.get("mapping")}
+        self.assertEqual(got, {"12": ("fixed", "host"), "13": ("not-fixed", "container")})
+
+    def test_thirdparty_rebuild_with_higher_version_is_unknown(self):
+        root = self.host(version="3.0.14-1+thirdparty1")
+        fake_proc(root, 14, "/usr/bin/openssl", maps=[LIB])
+        self.assertEqual(self.statuses(self.report(root)), [("unknown", None), ("unknown", "14")])
+
+    def test_process_gone_mid_scan_is_skipped(self):
+        # The pinned fd fails once the process exits; its reads are dropped.
+        root = self.host()
+        fake_proc(root, 15, "/usr/bin/openssl", maps=[LIB + " (deleted)"])
+        real, calls = c._read, []
+
+        def read(d, name):
+            calls.append(name)
+            if name == "stat" and calls.count("stat") == 2:
+                raise ProcessLookupError(3, "No such process")
+            return real(d, name)
+        with patch.object(c, "_read", side_effect=read):
+            r = self.report(root)
+        self.assertEqual((self.statuses(r), r["problems"]), ([("fixed", None)], []))
+
+    def test_soname_matches_its_real_file_only(self):
+        files = {"libcrypto.so.3": "openssl"}
+        self.assertEqual(c._lib_file("/usr/lib64/libcrypto.so.3.5.8", files), "libcrypto.so.3")
+        self.assertIsNone(c._lib_file("/usr/lib64/libcrypto.so.30", files))
+        self.assertIsNone(c._lib_file("/usr/lib64/libcrypto.so", files))
+
+    def test_rpm_library_package_needs_no_php_file(self):
+        with patch.object(c, "_which", return_value="/usr/bin/rpm"):
+            builds, problems = c.from_rpm(("almalinux", "9"), fake_runner(
+                {"rpm -qa": "openssl-libs\t1:3.5.8-2.el9_8"}), libs={"openssl-libs": "openssl"})
+        self.assertEqual([(b["package"], b["module"], b["branch"]) for b in builds],
+                         [("openssl-libs", "openssl", "3.5")])
+        self.assertEqual(problems, [])
+
+    def test_modules_do_not_cross(self):
+        # PHP builds get no OpenSSL rows and the other way round; a missing module is a problem.
+        from phpfixed.resolve import load_records, resolve
+        root = self.host()
+        inv = c.collect(root, fake_runner({}), libs={"libssl3": "openssl"}, files={"libcrypto.so.3": "openssl"})
+        r = resolve(inv, load_records() + [OPENSSL], ["CVE-2026-109618", "CVE-TEST-0002"])
+        self.assertEqual({(x["cve"], x["build"]["package"]) for x in r["results"]}, {("CVE-TEST-0002", "libssl3")})
+        self.assertIn("no PHP build found", r["problems"])
+
+    def test_scope_says_dynamically_linked_only(self):
+        r = self.report(self.host())
+        self.assertEqual(r["limits"], ["libcrypto.so.3: dynamically linked copies only; "
+                                       "statically linked or embedded copies are not checked"])
