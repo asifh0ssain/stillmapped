@@ -71,19 +71,15 @@ def run(cmd, ok=(0,)):
 
 def os_release(root="/"):
     """(id, stream) from /etc/os-release, e.g. ('ubuntu', '24.04'), ('rhel', '9')."""
-    info = {}
-    for name in ("etc/os-release", "usr/lib/os-release"):
+    text = ""
+    for name in ("/etc/os-release", "/usr/lib/os-release"):
         try:
-            with open(os.path.join(root, name), encoding="utf-8") as fh:
-                for line in fh:
-                    k, sep, v = line.strip().partition("=")
-                    if sep:
-                        info[k] = v.strip().strip('"')
+            text = _slurp(root, name).decode("utf-8", "replace")
             break
         except OSError:
             continue
-    osid = info.get("ID", "")
-    ver = info.get("VERSION_ID", "")
+    info = {k: v.strip().strip('"') for k, _, v in (line.strip().partition("=") for line in text.splitlines())}
+    osid, ver = info.get("ID", ""), info.get("VERSION_ID", "")
     # Ubuntu and SUSE track fixes per X.Y (24.04, 15.7); Debian and the
     # RHEL family per major release.
     full = osid in ("ubuntu", "sles", "sled", "opensuse-leap")
@@ -106,12 +102,11 @@ def from_dpkg(osr, root="/", libs={}):
     """Installed PHP packages, and the library packages named in libs
     ({package: module}), read straight from dpkg's status database."""
     try:
-        with open(os.path.join(root, "var/lib/dpkg/status"), encoding="utf-8", errors="replace") as fh:
-            paragraphs = fh.read().split("\n\n")
+        paragraphs = _slurp(root, "/var/lib/dpkg/status").decode("utf-8", "replace").split("\n\n")
     except FileNotFoundError:
         return [], []
     except OSError as e:
-        return [], [f"dpkg database unreadable: {e.strerror}"]
+        return [], [f"dpkg database unreadable: {e.strerror or e}"]
     builds = []
     for para in paragraphs:
         f = dict(line.split(": ", 1) for line in para.splitlines()
@@ -229,9 +224,7 @@ def from_directadmin(root="/"):
         if not os.path.isdir(os.path.join(prefix, "bin")):
             continue
         try:
-            with open(os.path.join(prefix, "include/php/main/php_version.h"), encoding="utf-8",
-                      errors="replace") as fh:
-                m = _PHP_VERSION_H.search(fh.read())
+            m = _PHP_VERSION_H.search(_slurp(prefix, "/include/php/main/php_version.h").decode("utf-8", "replace"))
         except OSError:
             m = None
         if m:
@@ -266,15 +259,22 @@ def _read(d, name):
         return fh.read()
 
 
-def _sha256(fd, algo="sha256"):
-    with open(fd, "rb") as fh:
-        st = os.fstat(fh.fileno())
+def _slurp(root, path, d=None):
+    """Bytes of the regular file at path inside root, symlinks resolved in
+    root (or relative to the directory fd d). Opened without blocking and
+    read only up to its size, at most MAX_READ: a FIFO, a device or
+    /proc/kmsg planted by a container can't block, flood or drain the scan."""
+    real = path if d is not None else _in_root(root, path)
+    if real is None:
+        raise OSError(f"symlink loop: {path}")
+    fd = os.open(os.path.join(root, real.lstrip("/")), os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY, dir_fd=d)
+    try:
+        st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode) or st.st_size > MAX_READ:
-            raise OSError("not a regular file of at most 64 MiB")
-        h = hashlib.new(algo)
-        while chunk := fh.read(1 << 20):
-            h.update(chunk)
-        return h.hexdigest()
+            raise OSError(f"not a regular file of at most 64 MiB: {path}")
+        return os.read(fd, st.st_size) if st.st_size else b""
+    finally:
+        os.close(fd)
 
 
 def _same_code(d, line, proot, path):
@@ -292,8 +292,8 @@ def _same_code(d, line, proot, path):
         return True, {}
     rng = "-".join(a.lstrip("0") or "0" for a in line[0].split("-"))  # map_files drops zero padding
     try:
-        mapped = _sha256(os.open(f"map_files/{rng}", os.O_RDONLY, dir_fd=d))
-        installed = _sha256(os.open(os.path.join(proot, path.lstrip("/")), os.O_RDONLY))
+        mapped = hashlib.sha256(_slurp("", f"map_files/{rng}", d)).hexdigest()
+        installed = hashlib.sha256(_slurp(proot, path)).hexdigest()
     except OSError as e:
         return None, {"why": f"can't read the mapped file: {e.strerror or e}"}
     return mapped == installed, {"mapped_sha256": mapped, "installed_sha256": installed}
@@ -306,11 +306,10 @@ def _root_owned(path):
 
 def _dpkg_list(root, pkg, ext="list"):
     """Lines of dpkg's file list (or md5sums) for a package, any architecture."""
-    info, files = os.path.join(root, "var/lib/dpkg/info"), []
-    for lst in [os.path.join(info, f"{pkg}.{ext}"), *glob.glob(os.path.join(info, f"{glob.escape(pkg)}:*.{ext}"))]:
+    info, files = "/var/lib/dpkg/info/", []
+    for lst in [f"{pkg}.{ext}", *map(os.path.basename, glob.glob(f"{root}{info}{glob.escape(pkg)}:*.{ext}"))]:
         try:
-            with open(lst, encoding="utf-8", errors="replace") as fh:
-                files += fh.read().splitlines()
+            files += _slurp(root, info + lst).decode("utf-8", "replace").splitlines()
         except OSError:
             continue
     return files
@@ -357,9 +356,8 @@ def _tampered(proot, b, path, runner):
     if b["source"] != "dpkg":
         return None
     entry = _dpkg_owns(proot, b["where"], path)
-    try:
-        with open(os.path.join(proot, "var/lib/dpkg/diversions"), encoding="utf-8", errors="replace") as fh:
-            diverted = fh.read().split("\n")[0::3]  # lines: original, diverted to, package
+    try:  # lines: original, diverted to, package
+        diverted = _slurp(proot, "/var/lib/dpkg/diversions").decode("utf-8", "replace").split("\n")[0::3]
     except FileNotFoundError:
         diverted = []
     if entry in diverted:
@@ -368,7 +366,7 @@ def _tampered(proot, b, path, runner):
         sums = {p: h for h, _, p in (line.partition("  ") for line in _dpkg_list(proot, b["where"], "md5sums"))}
         if entry.lstrip("/") not in sums:
             return "dpkg has no md5sum for it"
-        if _sha256(os.open(os.path.join(proot, path.lstrip("/")), os.O_RDONLY), "md5") != sums[entry.lstrip("/")]:
+        if hashlib.md5(_slurp(proot, path)).hexdigest() != sums[entry.lstrip("/")]:
             return "it differs from dpkg's md5sum"
     except OSError as e:
         return f"it can't be checked ({e.strerror or e})"
@@ -400,12 +398,10 @@ def _owner(proot, path, builds, rpm_name, module="php"):
             return b
     if module != "php":
         return None
-    exe = os.path.join(proot, path.lstrip("/"))
-    header = os.path.join(proot, prefix.lstrip("/"), "include/php/main/php_version.h")
+    header = f"{prefix}/include/php/main/php_version.h"
     try:
-        if _root_owned(exe) and _root_owned(header):
-            with open(header, encoding="utf-8", errors="replace") as fh:
-                m = _PHP_VERSION_H.search(fh.read())
+        if _root_owned(os.path.join(proot, path.lstrip("/"))) and _root_owned(os.path.join(proot, header.lstrip("/"))):
+            m = _PHP_VERSION_H.search(_slurp(proot, header).decode("utf-8", "replace"))
             return _upstream("source", m.group(1), prefix) if m else None
     except OSError:
         pass

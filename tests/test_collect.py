@@ -145,7 +145,7 @@ class TestDpkg(unittest.TestCase):
 
     def test_unreadable_dpkg_is_a_problem(self):
         root = root_with_dpkg(DPKG)
-        with patch("builtins.open", side_effect=PermissionError(13, "Permission denied")):
+        with patch.object(c, "_slurp", side_effect=PermissionError(13, "Permission denied")):
             builds, problems = c.from_dpkg(("debian", "12"), root)
         self.assertEqual(builds, [])
         self.assertEqual(problems, ["dpkg database unreadable: Permission denied"])
@@ -601,8 +601,8 @@ class TestLibraries(unittest.TestCase):
 
     def test_oversize_mapped_file_is_unknown(self):
         root = self.host()
-        fake_proc(root, 8, "/usr/bin/openssl", maps=[LIB + " (deleted)"], old=b"x" * 100)
-        with patch.object(c, "MAX_READ", 20):  # the installed file (14 bytes) fits, the mapped one doesn't
+        fake_proc(root, 8, "/usr/bin/openssl", maps=[LIB + " (deleted)"], old=b"x" * 2000)
+        with patch.object(c, "MAX_READ", 1000):  # every fixture file fits, the mapped one doesn't
             self.assertTrue(any("pid 8: can't compare" in p for p in self.report(root)["problems"]))
 
     def test_map_files_name_drops_zero_padding(self):
@@ -771,3 +771,66 @@ class TestPackageConsistency(unittest.TestCase):
                     inv = c.collect(root, runner, libs={"openssl-libs": "openssl"}, files={"libcrypto.so.3": "openssl"})
                 self.assertEqual(bool(inv["mappings"]), traced)
                 self.assertEqual(any("fails rpm -V" in p for p in inv["problems"]), not traced)
+
+
+class TestHostileFiles(unittest.TestCase):
+    """Review #4 and #9: files a container controls can't block, flood or
+    abort the scan, and its absolute symlinks resolve inside it."""
+
+    def setUp(self):
+        import signal
+        for p in (patch.object(c, "_which", return_value=None), patch.object(c.os, "geteuid", return_value=0)):
+            p.start()
+            self.addCleanup(p.stop)
+
+        def timeout(*_):
+            raise KeyboardInterrupt("scan blocked")  # not an OSError, so the code can't swallow it
+        signal.signal(signal.SIGALRM, timeout)
+        signal.alarm(5)  # old code blocks forever on a FIFO
+        self.addCleanup(signal.alarm, 0)
+
+    def box_scan(self, prep):
+        root, box = TestLibraries.host(None), TestLibraries.host(None)
+        fake_proc(root, 30, "/usr/bin/openssl", maps=[LIB + " (deleted)"], proot=box)
+        prep(box)
+        return c.collect(root, fake_runner({}), libs={"libssl3": "openssl"}, files={"libcrypto.so.3": "openssl"})
+
+    def test_container_fifo_database_does_not_block(self):
+        def prep(box):
+            os.remove(os.path.join(box, "var/lib/dpkg/status"))
+            os.mkfifo(os.path.join(box, "var/lib/dpkg/status"))
+        inv = self.box_scan(prep)
+        self.assertEqual(inv["mappings"], [])
+        self.assertTrue(any("pid 30" in p for p in inv["problems"]))
+
+    def test_installed_file_replaced_by_fifo_does_not_block(self):
+        def prep(box):
+            os.remove(os.path.join(box, LIB.lstrip("/")))
+            os.mkfifo(os.path.join(box, LIB.lstrip("/")))
+        inv = self.box_scan(prep)
+        self.assertEqual(inv["mappings"], [])
+        self.assertTrue(any("pid 30" in p and "can't be checked" in p for p in inv["problems"]))
+
+    def test_absolute_symlink_in_container_resolves_inside_it(self):
+        box = tempfile.mkdtemp()
+        write(box, "etc/inside", "container's file")
+        os.makedirs(os.path.join(box, "var"))
+        os.symlink("/etc/inside", os.path.join(box, "var/link"))
+        self.assertEqual(c._slurp(box, "/var/link"), b"container's file")
+        os.symlink("/etc/hosts", os.path.join(box, "var/host"))  # exists on the scanner's host only
+        with self.assertRaises(FileNotFoundError):
+            c._slurp(box, "/var/host")
+
+    def test_size_zero_file_is_not_read(self):
+        # /proc/kmsg reports size 0; reading it would drain the kernel log.
+        box = tempfile.mkdtemp()
+        write(box, "kmsg", "")
+        with patch.object(c.os, "read", side_effect=AssertionError("read")):
+            self.assertEqual(c._slurp(box, "/kmsg"), b"")
+
+    def test_non_utf8_container_os_release_does_not_abort(self):
+        def prep(box):
+            with open(os.path.join(box, "etc/os-release"), "wb") as fh:
+                fh.write(b'ID=debian\xff\nVERSION_ID="12"\n')
+        inv = self.box_scan(prep)
+        self.assertEqual([m["build"]["db"] for m in inv["mappings"]], ["container"])
