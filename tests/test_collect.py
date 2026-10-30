@@ -921,7 +921,8 @@ class TestReviewSmallFixes(unittest.TestCase):
         rngs = sorted(os.listdir(os.path.join(d, "map_files")))
         with open(os.path.join(d, "map_files", rngs[-1]), "wb") as fh:
             fh.write(INSTALLED)
-        lines = open(os.path.join(d, "maps")).read().splitlines()
+        with open(os.path.join(d, "maps")) as fh:
+            lines = fh.read().splitlines()
         ino = int(lines[-1].split()[4])
         lines[-1] = lines[-1].replace(f" {ino} ", f" {ino + 1} ")
         write(root, "proc/40/maps", "\n".join(lines) + "\n")
