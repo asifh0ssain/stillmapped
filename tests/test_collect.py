@@ -1087,3 +1087,20 @@ class TestReview2(unittest.TestCase):
             r, code = self.scan(host)
         self.assertTrue(any("dpkg no longer lists it" in p for p in r["problems"]))
         self.assertEqual(code, 2)
+
+    def test_owner_lookup_reads_each_file_list_once(self):
+        # #6: each unowned copy re-read every file list (and globbed the info dir): ~2 s per path.
+        host = TestLibraries.host(None)
+        for i in range(50):
+            write(host, f"var/lib/dpkg/info/pkg{i}.list", "".join(f"/usr/share/pkg{i}/f{j}.so\n" for j in range(5)))
+        for i in range(20):
+            fake_proc(host, 200 + i, "/usr/bin/x", maps=[f"/tmp/u/libcrypto-{i}.so.3"])
+        reads, real = [], c._slurp
+
+        def counting(root, path, d=None):
+            reads.append(path)
+            return real(root, path, d)
+        with patch.object(c, "_slurp", counting):
+            r, code = self.scan(host)
+        self.assertEqual(sum(1 for p in r["problems"] if "bundled copy" in p), 20)
+        self.assertLessEqual(sum(1 for p in reads if p.endswith("pkg7.list")), 2)  # index build, plus nothing per path

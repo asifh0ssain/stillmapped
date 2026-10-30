@@ -312,7 +312,8 @@ def _root_owned(path):
 def _dpkg_list(root, pkg, ext="list"):
     """Lines of dpkg's file list (or md5sums) for a package, any architecture."""
     info, files = "/var/lib/dpkg/info/", []
-    other_arch = [] if ":" in pkg else glob.glob(f"{root}{info}{glob.escape(pkg)}:*.{ext}")
+    plain = ":" in pkg or os.path.exists(f"{root}{info}{pkg}.{ext}")  # else look for pkg:arch lists
+    other_arch = [] if plain else glob.glob(f"{root}{info}{glob.escape(pkg)}:*.{ext}")
     for lst in [f"{pkg}.{ext}", *map(os.path.basename, other_arch)]:
         try:
             files += _slurp(root, info + lst).decode("utf-8", "replace").splitlines()
@@ -383,10 +384,16 @@ def _tampered(proot, b, path, runner):
     return None
 
 
-def _dpkg_owner(proot, path):
-    """Any dpkg package that lists path, or None."""
-    names = (os.path.basename(f)[:-5] for f in glob.glob(os.path.join(proot, "var/lib/dpkg/info/*.list")))
-    return next((p for p in names if _dpkg_owns(proot, p, path)), None)
+def _dpkg_owner(proot, path, index):
+    """Any dpkg package that lists the shared library at path, or None. index
+    caches {path: package} for one root, so each file list is read once."""
+    if not index:
+        index[None], dirs = None, {}
+        for pkg in (os.path.basename(f)[:-5] for f in glob.glob(os.path.join(proot, "var/lib/dpkg/info/*.list"))):
+            for f in (f for f in _dpkg_list(proot, pkg) if ".so" in os.path.basename(f)):
+                d = dirs.setdefault(os.path.dirname(f), _in_root(proot, os.path.dirname(f)) or "\0")
+                index[f"{d.rstrip('/')}/{os.path.basename(f)}"] = pkg
+    return index.get(path)
 
 
 def _rpm_owner(runner, path):
@@ -438,7 +445,7 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
     host = (host.st_dev, host.st_ino)
     by_root = {host: (list(builds), [])}  # root -> (builds, problems of its package database)
     use_rpm = any(b["source"] == "rpm" for b in builds)
-    owners, workers, mappings, extra, unreadable = {}, [], [], [], 0
+    owners, indexes, workers, mappings, extra, unreadable = {}, {}, [], [], [], 0
     try:
         userns = os.readlink(os.path.join(proc, "self/ns/user"))
     except OSError:
@@ -479,7 +486,7 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
                     b = _owner(proot, path, by_root[key][0], rpm_name, module)
                     why = b and _tampered(proot, b, path, runner) or b
                     if b is None and module != "php":
-                        other = rpm_name or _dpkg_owner(proot, path)
+                        other = rpm_name or _dpkg_owner(proot, path, indexes.setdefault(key, {}))
                         why = f"owned by {other}, which no record covers" if other else "bundled copy, not owned by a package"
                     owners[key, path, module] = why
                     if isinstance(why, dict) and (in_container or b["source"] == "source"):
