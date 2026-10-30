@@ -48,11 +48,38 @@ RPM_OUT = "\n".join([
     "php82-php-fpm\t(none):8.2.35-1.el9.remi",
     "php-pecl-redis\t(none):6.0.2-1.el9",                # ignored
 ])
+# rpm -q --qf '[%{NAME}\t%{FILENAMES}\n]': php-common installs no PHP binary.
+RPM_FILES = "\n".join([
+    "php-fpm\t/usr/sbin/php-fpm",
+    "php-common\t/usr/lib64/php/modules/json.so",
+    "ea-php74-php-fpm\t/opt/cpanel/ea-php74/root/usr/sbin/php-fpm",
+    "alt-php81-fpm\t/opt/alt/php81/usr/sbin/php-fpm",
+    "plesk-php82-fpm\t/opt/plesk/php/8.2/sbin/php-fpm",
+    "php82-php-fpm\t/opt/remi/php82/root/usr/sbin/php-fpm",
+    "php8-fpm\t/usr/sbin/php-fpm",
+    "php7\t/usr/bin/php",
+    "apache2-mod_php8\t/usr/lib64/apache2/mod_php8.so",
+])
+
+
+# One file per package, as dpkg lists it. Only packages that install PHP
+# itself (a binary or module) count as a PHP build.
+DEB_LISTS = {
+    "php8.3-fpm": "/.\n/usr/sbin\n/usr/sbin/php-fpm8.3\n",
+    "php8.3-cli": "/usr/bin/php8.3",  # no trailing newline
+    "php8.3-mysql": "/usr/lib/php/20230831/mysqli.so\n",
+    "libapache2-mod-php8.3:amd64": "/usr/lib/apache2/modules/libphp8.3.so\n",
+    "php8.5-fpm": "/usr/sbin/php-fpm8.5\n",
+    "php8.1-fpm": "/usr/sbin/php-fpm8.1\n",
+    "php8.2-fpm": "/usr/sbin/php-fpm8.2\n",
+}
 
 
 def root_with_dpkg(text):
     root = tempfile.mkdtemp()
     write(root, "var/lib/dpkg/status", text)
+    for pkg, files in DEB_LISTS.items():
+        write(root, f"var/lib/dpkg/info/{pkg}.list", files)
     return root
 
 
@@ -97,6 +124,13 @@ class TestDpkg(unittest.TestCase):
                     dpkg_status(("php8.3-fpm", "8.3.6-0ubuntu0.24.04.12", status))))
                 self.assertEqual(len(builds), 1)
 
+    def test_package_without_php_file_is_not_a_build(self):
+        # Open risk 2: only a package that installs PHP itself counts.
+        root = root_with_dpkg(dpkg_status(("php8.3-common", "8.3.6-0ubuntu0.24.04.12", OK),
+                                          ("php8.3-mysql", "8.3.6-0ubuntu0.24.04.12", OK)))
+        write(root, "var/lib/dpkg/info/php8.3-common.list", "/usr/lib/php\n/usr/share/php8.3-common\n")
+        self.assertEqual(c.from_dpkg(("ubuntu", "24.04"), root), ([], []))
+
     def test_no_dpkg(self):
         self.assertEqual(c.from_dpkg(("debian", "12"), tempfile.mkdtemp()), ([], []))
 
@@ -115,7 +149,7 @@ class TestRpm(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def test_parse(self):
-        builds, _ = c.from_rpm(("almalinux", "9"), fake_runner({"rpm -qa": RPM_OUT}))
+        builds, _ = c.from_rpm(("almalinux", "9"), fake_runner({"rpm -qa": RPM_OUT, "rpm -q": RPM_FILES}))
         got = {(b["vendor"], b["package"], b["version"]) for b in builds}
         self.assertEqual(got, {
             ("almalinux", "php", "8.2.35-1.module+el9.8.0+25111+a1450321"),
@@ -128,7 +162,7 @@ class TestRpm(unittest.TestCase):
 
     def test_suse_php8(self):
         out = "php8-fpm\t(none):8.3.36-150700.3.24.1\nphp7\t(none):7.4.33-150400.4.81.1"
-        builds, _ = c.from_rpm(("sles", "15.7"), fake_runner({"rpm -qa": out}))
+        builds, _ = c.from_rpm(("sles", "15.7"), fake_runner({"rpm -qa": out, "rpm -q": RPM_FILES}))
         self.assertEqual({(b["package"], b["branch"]) for b in builds}, {("php8", "8.3"), ("php7", "7.4")})
 
     def test_failing_rpm_is_a_problem(self):
@@ -136,6 +170,10 @@ class TestRpm(unittest.TestCase):
         builds, problems = c.from_rpm(("rhel", "9"), fake_runner({}))
         self.assertEqual(builds, [])
         self.assertEqual(len(problems), 1)
+
+    def test_rpm_file_list_failure_is_a_problem(self):
+        builds, problems = c.from_rpm(("almalinux", "9"), fake_runner({"rpm -qa": RPM_OUT}))
+        self.assertEqual((builds, len(problems)), ([], 1))
 
     def test_branch_ignores_epoch(self):
         self.assertEqual(c.branch("1:7.4.33-31+0~20261021"), "7.4")
@@ -306,7 +344,7 @@ class TestWorkers(unittest.TestCase):
         # Review: SUSE's httpd-prefork and mod_php8.so were not recognized.
         with patch.object(c, "_which", return_value="/usr/bin/rpm"):
             self.builds = c.from_rpm(("sles", "15.7"), fake_runner(
-                {"rpm -qa": "apache2-mod_php8\t(none):8.3.36-150700.3.24.1"}))[0]
+                {"rpm -qa": "apache2-mod_php8\t(none):8.3.36-150700.3.24.1", "rpm -q": RPM_FILES}))[0]
         self.assertEqual([b["package"] for b in self.builds], ["php8"])
         fake_proc(self.root, 300, "/usr/sbin/httpd-prefork", maps=mapped("/usr/lib64/apache2/mod_php8.so (deleted)"))
         procs, _, problems = self.workers(fake_runner({"rpm -qf": "apache2-mod_php8\n"}))
@@ -412,6 +450,15 @@ class TestPanelRuntime(unittest.TestCase):
               "origin": r"^8\.2\.\d+-\d+\.\d+\.\d+\.cpanel$",
               "evidence_url": "https://example.invalid/ea4", "checked": "2026-10-29"}
 
+    FILES = "\n".join([
+        "ea-php82-php-cli\t/opt/cpanel/ea-php82/root/usr/bin/php",
+        "ea-php82-php-fpm\t/opt/cpanel/ea-php82/root/usr/sbin/php-fpm",
+        "ea-php82-runtime\t/etc/scl/prefixes/ea-php82",   # from demo eaphp-runtime-files.txt
+        "ea-php82-runtime\t/opt/cpanel/ea-php82/enable",
+        "ea-php82-runtime\t/opt/cpanel/ea-php82/root/usr/bin",
+        "ea-php82-runtime\t/opt/cpanel/ea-php82/root/usr/share/man/man7/ea-php82.7.gz",
+    ])
+
     def report(self):
         from phpfixed.resolve import resolve
         root = tempfile.mkdtemp()
@@ -421,7 +468,8 @@ class TestPanelRuntime(unittest.TestCase):
         with patch.object(c, "_which", side_effect=which), \
                 patch.object(c.os, "geteuid", return_value=0), \
                 patch.object(c, "_root_owned", return_value=True):
-            inv = c.collect(root, fake_runner({"rpm -qa": self.RPM, "rpm -qf": "ea-php82-php-fpm\n"}))
+            inv = c.collect(root, fake_runner({"rpm -qa": self.RPM, "rpm -q": self.FILES,
+                                              "rpm -qf": "ea-php82-php-fpm\n"}))
         return resolve(inv, [self.RECORD], ["CVE-TEST-0001"])
 
     def test_runtime_fix_record_does_not_fix_cli_or_running_php(self):
@@ -433,12 +481,11 @@ class TestPanelRuntime(unittest.TestCase):
         self.assertEqual(report["problems"], [])            # pid 10 traced to it
         self.assertNotEqual(exit_code(report), 0)
 
-    # Open risk 2: the runtime package reads "fixed" next to an unfixed PHP.
-    # Expected failure until step 4.
-    @unittest.expectedFailure
     def test_runtime_package_never_reads_fixed(self):
-        fixed = [r["build"]["where"] for r in self.report()["results"] if r["status"] == "fixed"]
-        self.assertEqual(fixed, [])
+        # Open risk 2: the runtime package read "fixed" next to an unfixed PHP.
+        results = self.report()["results"]
+        self.assertEqual([r["status"] for r in results], ["not-fixed"])
+        self.assertNotIn("runtime", results[0]["build"]["where"])
 
 
 if __name__ == "__main__":

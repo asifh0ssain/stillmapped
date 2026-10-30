@@ -42,6 +42,9 @@ _PHP_VERSION_H = re.compile(r'#define PHP_VERSION "([^"]+)"')
 _PHP_EXE = re.compile(r"(php-fpm|php-cgi|lsphp|php)[\d.]*$|frankenphp$")
 _EMBEDS = re.compile(r"(apache2|httpd)(-\w+)?$|unitd$")
 _PHP_MODULE = re.compile(r"/(libphp|mod_php)[^/]*\.so")
+# A file that is PHP itself. A package counts as a PHP build only if it
+# installs one: cPanel's ea-phpXX-runtime shares the build's name but not its code.
+_PHP_FILE = re.compile(r"/(?:s?bin|cgi-bin)/(?:php-fpm|php-cgi|lsphp|php)[\d.]*$|/(?:libphp|mod_php)[^/]*\.so$")
 
 
 def _which(name):
@@ -113,7 +116,7 @@ def from_dpkg(osr, root="/"):
             continue
         name, version = f.get("Package", ""), f.get("Version", "")
         m = _DEB_PKG.match(name) or _PANEL.match(name)
-        if not m:
+        if not m or not any(_PHP_FILE.search(f) for f in _dpkg_list(root, name)):
             continue
         pkg = m.group(1)
         if pkg.startswith(("ea-", "alt-", "plesk-")):
@@ -148,6 +151,12 @@ def from_rpm(osr, runner=run):
         else:
             continue
         builds.append(_build("rpm", vendor, stream, m.group(1), evr, "vercmp-rpm", name))
+    if builds:  # names matched an anchored pattern above, so none starts with '-'
+        out = runner(["rpm", "-q", "--qf", "[%{NAME}\t%{FILENAMES}\n]", *[b["where"] for b in builds]])
+        if out is None:
+            return [], ["rpm file lists couldn't be read; PHP packages not checked"]
+        php = {n for n, _, f in (line.partition("\t") for line in out.splitlines()) if _PHP_FILE.search(f)}
+        builds = [b for b in builds if b["where"] in php]
     return builds, []
 
 
@@ -239,16 +248,20 @@ def _root_owned(path):
     return st.st_uid == 0 and not st.st_mode & 0o022
 
 
-def _dpkg_owns(proot, pkg, path):
-    info = os.path.join(proot, "var/lib/dpkg/info")
+def _dpkg_list(root, pkg):
+    """Paths dpkg lists for an installed package (any architecture)."""
+    info, files = os.path.join(root, "var/lib/dpkg/info"), []
     for lst in [os.path.join(info, pkg + ".list"), *glob.glob(os.path.join(info, glob.escape(pkg) + ":*.list"))]:
         try:
             with open(lst, encoding="utf-8", errors="replace") as fh:
-                if any(line.rstrip("\n") == path for line in fh):
-                    return True
+                files += fh.read().splitlines()
         except OSError:
             continue
-    return False
+    return files
+
+
+def _dpkg_owns(proot, pkg, path):
+    return path in _dpkg_list(proot, pkg)
 
 
 def _rpm_owner(runner, path):
