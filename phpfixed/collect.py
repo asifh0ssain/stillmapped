@@ -509,12 +509,16 @@ def collect(root="/", runner=run, libs={}, files={}):
     library records."""
     osr = os_release(root)
     builds, problems = [], []
-    for found, issues in (from_dpkg(osr, root, libs), from_rpm(osr, runner, libs), from_docker(runner),
-                          from_homebrew(root), from_directadmin(root)):
+    packages = (from_dpkg(osr, root, libs), from_rpm(osr, runner, libs))
+    for found, issues in (*packages, from_docker(runner), from_homebrew(root), from_directadmin(root)):
         builds += found
         problems += issues
     workers, extra, worker_problems, mappings = running_workers(root, builds, runner, libs, files)
     problems += worker_problems
+    # Verdicts pair processes with the versions read above; an upgrade or a
+    # downgrade during the scan breaks that pairing.
+    if (from_dpkg(osr, root, libs), from_rpm(osr, runner, libs)) != packages:
+        problems.append("packages changed during the scan; run it again")
     # Same package seen through several binaries (fpm, cli) is one build;
     # the same version from Docker and Homebrew is two. Every place it was
     # seen stays listed.

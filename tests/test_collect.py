@@ -1031,3 +1031,16 @@ class TestReview2(unittest.TestCase):
         fake_proc(host, 2)  # kernel thread: no exe
         r, code = self.scan(host)
         self.assertEqual(r["problems"], [])
+
+    def test_package_change_during_scan_is_a_problem(self):
+        # #4: a downgrade between the dpkg read and the /proc walk read fixed, exit 0.
+        host = TestLibraries.host(None)
+        real = c.running_workers
+
+        def downgrade_then_walk(*a, **k):
+            write(host, "var/lib/dpkg/status", dpkg_status(("libssl3", "3.0.14-1~deb12u1", OK)))
+            return real(*a, **k)
+        with patch.object(c, "running_workers", downgrade_then_walk):
+            r, code = self.scan(host)
+        self.assertIn("packages changed during the scan; run it again", r["problems"])
+        self.assertEqual(code, 2)
