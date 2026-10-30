@@ -127,11 +127,22 @@ class TestDpkg(unittest.TestCase):
     def test_held_and_half_states_count_as_installed(self):
         # Audit: only 'ii' used to count, so held (hi) packages were skipped.
         for status in ("hold ok installed", "reinstreq ok installed", "purge ok installed",
-                       "install ok half-configured", "install ok unpacked"):
+                       "install ok half-configured", "install ok unpacked", "install ok half-installed"):
             with self.subTest(status=status):
                 builds, _ = c.from_dpkg(("ubuntu", "24.04"), root_with_dpkg(
                     dpkg_status(("php8.3-fpm", "8.3.6-0ubuntu0.24.04.12", status))))
                 self.assertEqual(len(builds), 1)
+
+    def test_package_not_fully_installed_is_a_problem(self):
+        # Second-review rule: any state but "install ok installed" is a problem, not a pass.
+        for status, problem in (("install ok installed", False), ("hold ok installed", True),
+                                ("install ok half-installed", True), ("install reinstreq installed", True),
+                                ("install ok triggers-pending", True)):
+            for pkg in ("php8.3-fpm", "libssl3"):
+                with self.subTest(status=status, pkg=pkg):
+                    root = root_with_dpkg(dpkg_status((pkg, "8.3.6-0ubuntu0.24.04.12", status)))
+                    builds, problems = c.from_dpkg(("ubuntu", "24.04"), root, {"libssl3": "openssl"})
+                    self.assertEqual((len(builds), bool(problems)), (1, problem))
 
     def test_package_without_php_file_is_not_a_build(self):
         # Open risk 2: only a package that installs PHP itself counts.

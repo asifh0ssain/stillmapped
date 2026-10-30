@@ -110,28 +110,31 @@ def from_dpkg(osr, root="/", libs={}):
     for para in paragraphs:
         f = dict(line.split(": ", 1) for line in para.splitlines()
                  if ": " in line and not line[0].isspace())
-        # Held, reinstall-required and half-configured packages still have
-        # their files on disk; only these two states don't.
-        if f.get("Status", "").split()[-1:] in ([], ["not-installed"], ["config-files"]):
+        # Only these two states leave no files on disk. Any other state but
+        # "install ok installed" keeps the build and is a problem.
+        status = f.get("Status", "")
+        if status.split()[-1:] in ([], ["not-installed"], ["config-files"]):
             continue
         name, version = f.get("Package", ""), f.get("Version", "")
         if name in libs:
             builds.append(_build("dpkg", *osr, name, version, "vercmp-deb", name, libs[name]))
-            continue
-        m = _DEB_PKG.match(name) or _PANEL.match(name)
-        files = m and _dpkg_list(root, name)
-        if m and not files:
-            problems.append(f"dpkg has no readable file list for {name}; it was not checked")
-        if not files or not any(_PHP_FILE.search(f) for f in files):
-            continue
-        pkg = m.group(1)
-        if pkg.startswith(("ea-", "alt-", "plesk-")):
-            vendor, stream = _panel_vendor(pkg), "*"
-        elif _SURY.search(version):
-            vendor, stream = "sury", "*"
         else:
-            vendor, stream = osr
-        builds.append(_build("dpkg", vendor, stream, pkg, version, "vercmp-deb", name))
+            m = _DEB_PKG.match(name) or _PANEL.match(name)
+            files = m and _dpkg_list(root, name)
+            if m and not files:
+                problems.append(f"dpkg has no readable file list for {name}; it was not checked")
+            if not files or not any(_PHP_FILE.search(f) for f in files):
+                continue
+            pkg = m.group(1)
+            if pkg.startswith(("ea-", "alt-", "plesk-")):
+                vendor, stream = _panel_vendor(pkg), "*"
+            elif _SURY.search(version):
+                vendor, stream = "sury", "*"
+            else:
+                vendor, stream = osr
+            builds.append(_build("dpkg", vendor, stream, pkg, version, "vercmp-deb", name))
+        if status != "install ok installed":
+            problems.append(f"dpkg state of {name} is '{status}', not 'install ok installed'")
     return builds, problems
 
 
