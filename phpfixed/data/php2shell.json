@@ -37,11 +37,11 @@
 
     {"vendor": "sles", "origin": "^8\\.3\\.\\d+-150700\\.\\d+(\\.\\d+)*$", "stream": "15.7", "package": "php8", "branch": "8.3",
      "match": "vercmp-rpm", "fixed": "8.3.36-150700.3.24.1", "status": "fixed",
-     "evidence_url": "https://www.suse.com/security/cve/CVE-2026-109618.html",
+     "evidence_url": "https://www.suse.com/security/cve/CVE-2026-109618",
      "evidence": "SUSE Linux Enterprise Server 15 SP7: Released, php8 >= 8.3.36-150700.3.24.1", "checked": "2026-10-22"},
     {"vendor": "sles", "origin": "^7\\.4\\.33-150400\\.\\d+(\\.\\d+)*$", "stream": "15.7", "package": "php7", "branch": "7.4",
      "match": "vercmp-rpm", "fixed": "7.4.33-150400.4.81.1", "status": "fixed",
-     "evidence_url": "https://www.suse.com/security/cve/CVE-2026-109618.html",
+     "evidence_url": "https://www.suse.com/security/cve/CVE-2026-109618",
      "evidence": "SUSE Linux Enterprise Server 15 SP7: Released, php7 >= 7.4.33-150400.4.81.1", "checked": "2026-10-22"},
 
     {"vendor": "upstream", "stream": "*", "package": "php", "branch": "8.5",
