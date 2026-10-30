@@ -421,7 +421,7 @@ class TestWorkers(unittest.TestCase):
         with patch.object(c, "_which", return_value="/usr/bin/rpm"):
             self.builds = c.from_rpm(("sles", "15.7"), fake_runner(
                 {"rpm -qa": "apache2-mod_php8\t(none):8.3.36-150700.3.24.1", "rpm -q": RPM_FILES}))[0]
-            runner = fake_runner({"rpm -qf": "apache2-mod_php8\n", "rpm -V": ""})
+            runner = fake_runner({"rpm -qf": "apache2-mod_php8 (none):8.3.36-150700.3.24.1\n", "rpm -V": ""})
         self.assertEqual([b["package"] for b in self.builds], ["php8"])
         fake_proc(self.root, 300, "/usr/sbin/httpd-prefork", maps=["/usr/lib64/apache2/mod_php8.so (deleted)"])
         procs, _, problems = self.workers(runner)
@@ -548,7 +548,7 @@ class TestPanelRuntime(unittest.TestCase):
                 patch.object(c.os, "geteuid", return_value=0), \
                 patch.object(c, "_root_owned", return_value=True):
             inv = c.collect(root, fake_runner({"rpm -qa": self.RPM, "rpm -q": self.FILES, "rpm -V": "",
-                                              "rpm -qf": "ea-php82-php-fpm\n"}))
+                                              "rpm -qf": "ea-php82-php-fpm (none):8.2.34-1.1.1.cpanel\n"}))
         return resolve(inv, [self.RECORD], ["CVE-TEST-0001"])
 
     def test_runtime_fix_record_does_not_fix_cli_or_running_php(self):
@@ -811,7 +811,7 @@ class TestPackageConsistency(unittest.TestCase):
                 root = tempfile.mkdtemp()
                 write(root, "etc/os-release", 'ID=almalinux\nVERSION_ID="9.8"\n')
                 fake_proc(root, 23, "/usr/bin/openssl", maps=[lib])
-                runner = fake_runner({"rpm -qa": "openssl-libs\t1:3.5.8-2.el9_8", "rpm -qf": "openssl-libs\n",
+                runner = fake_runner({"rpm -qa": "openssl-libs\t1:3.5.8-2.el9_8", "rpm -qf": "openssl-libs 1:3.5.8-2.el9_8\n",
                                       "rpm -V": verify})
                 with patch.object(c, "_which", return_value="/usr/bin/rpm"):
                     inv = c.collect(root, runner, libs={"openssl-libs": "openssl"}, files={"libcrypto.so.3": "openssl"})
@@ -979,3 +979,39 @@ class TestReview2(unittest.TestCase):
         r = resolve(c.collect(host, fake_runner({})), load_records(), ["CVE-2026-109618"])
         self.assertTrue(any(p.startswith("container of pid 100: dpkg state of php8.2-fpm") for p in r["problems"]))
         self.assertEqual(exit_code(r), 2)
+
+    def multiarch_root(self):
+        """libssl3:amd64 fixed and libssl3:i386 vulnerable (Multi-Arch: same)."""
+        root = tempfile.mkdtemp()
+        write(root, "etc/os-release", 'ID=debian\nVERSION_ID="12"\n')
+        write(root, "var/lib/dpkg/status", "".join(
+            f"Package: libssl3\nStatus: {OK}\nArchitecture: {a}\nMulti-Arch: same\nVersion: {v}\n\n"
+            for a, v in (("amd64", "3.0.14-1~deb12u2"), ("i386", "3.0.11-1~deb12u2"))))
+        for a, d in (("amd64", "x86_64"), ("i386", "i386")):
+            write(root, f"var/lib/dpkg/info/libssl3:{a}.list", f"/usr/lib/{d}-linux-gnu/libcrypto.so.3\n")
+            write(root, f"var/lib/dpkg/info/libssl3:{a}.md5sums", md5sums(f"/usr/lib/{d}-linux-gnu/libcrypto.so.3"))
+        return root
+
+    def test_multiarch_mapping_gets_its_own_architecture(self):
+        # #2: a 32-bit process mapping the vulnerable i386 libcrypto got the amd64 version.
+        i386 = "/usr/lib/i386-linux-gnu/libcrypto.so.3"
+        root = self.multiarch_root()
+        fake_proc(root, 7, "/usr/bin/openssl32", maps=[i386])
+        r, code = self.scan(root)
+        self.assertEqual([(x["status"], x["build"]["where"]) for x in r["results"] if x.get("mapping")],
+                         [("not-fixed", "libssl3:i386")])
+        r, code = self.scan(self.container(self.multiarch_root(), maps=[i386]))
+        self.assertEqual(code, 1)  # in a container the vulnerable one used to vanish: exit 0
+
+    def test_rpm_multilib_mapping_gets_its_instance_version(self):
+        rec = {**OPENSSL, "vendor": "rhel", "stream": "9", "package": "openssl-libs", "match": "vercmp-rpm",
+               "fixed": "1:3.0.7-28.el9_4", "origin": r"^1:3\.0\.7-\d+\.el9(_\d+)?$"}
+        root = tempfile.mkdtemp()
+        write(root, "etc/os-release", 'ID=rhel\nVERSION_ID="9.4"\n')
+        fake_proc(root, 9, "/usr/bin/app32", maps=["/usr/lib/libcrypto.so.3.0.7"])
+        runner = fake_runner({"rpm -qa": "openssl-libs\t1:3.0.7-28.el9_4\nopenssl-libs\t1:3.0.7-24.el9\n",
+                              "rpm -qf": "openssl-libs 1:3.0.7-24.el9\n", "rpm -V": ""})
+        with patch.object(c, "_which", return_value="/usr/bin/rpm"):
+            r, code = self.scan(root, [rec], runner, {"openssl-libs": "openssl"})
+        self.assertEqual([(x["status"], x["build"]["version"]) for x in r["results"] if x.get("mapping")],
+                         [("not-fixed", "1:3.0.7-24.el9")])

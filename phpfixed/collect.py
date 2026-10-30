@@ -116,8 +116,10 @@ def from_dpkg(osr, root="/", libs={}):
         if status.split()[-1:] in ([], ["not-installed"], ["config-files"]):
             continue
         name, version = f.get("Package", ""), f.get("Version", "")
+        # Multi-Arch: same packages keep one file list per architecture.
+        where = f"{name}:{f.get('Architecture')}" if f.get("Multi-Arch") == "same" else name
         if name in libs:
-            builds.append(_build("dpkg", *osr, name, version, "vercmp-deb", name, libs[name]))
+            builds.append(_build("dpkg", *osr, name, version, "vercmp-deb", where, libs[name]))
         else:
             m = _DEB_PKG.match(name) or _PANEL.match(name)
             files = m and _dpkg_list(root, name)
@@ -132,7 +134,7 @@ def from_dpkg(osr, root="/", libs={}):
                 vendor, stream = "sury", "*"
             else:
                 vendor, stream = osr
-            builds.append(_build("dpkg", vendor, stream, pkg, version, "vercmp-deb", name))
+            builds.append(_build("dpkg", vendor, stream, pkg, version, "vercmp-deb", where))
         if status not in ("install ok installed", "hold ok installed"):
             problems.append(f"dpkg state of {name} is '{status}', not 'install ok installed'")
     return builds, problems
@@ -310,7 +312,8 @@ def _root_owned(path):
 def _dpkg_list(root, pkg, ext="list"):
     """Lines of dpkg's file list (or md5sums) for a package, any architecture."""
     info, files = "/var/lib/dpkg/info/", []
-    for lst in [f"{pkg}.{ext}", *map(os.path.basename, glob.glob(f"{root}{info}{glob.escape(pkg)}:*.{ext}"))]:
+    other_arch = [] if ":" in pkg else glob.glob(f"{root}{info}{glob.escape(pkg)}:*.{ext}")
+    for lst in [f"{pkg}.{ext}", *map(os.path.basename, other_arch)]:
         try:
             files += _slurp(root, info + lst).decode("utf-8", "replace").splitlines()
         except OSError:
@@ -385,9 +388,10 @@ def _dpkg_owner(proot, path):
 
 
 def _rpm_owner(runner, path):
-    """Name of the rpm package that owns path, or None."""
-    out = runner(["rpm", "-qf", "--qf", "%{NAME}\n", path])
-    return out.strip() if out and len(out.split()) == 1 else None
+    """'name epoch:version-release' of the one rpm package instance that owns
+    path (multilib instances share a name, not a version), or None."""
+    out = runner(["rpm", "-qf", "--qf", "%{NAME} %{EPOCH}:%{VERSION}-%{RELEASE}\n", path])
+    return out.strip().replace("(none):", "") if out and len(out.split()) == 2 else None
 
 
 def _owner(proot, path, builds, rpm_name, module="php"):
@@ -398,7 +402,7 @@ def _owner(proot, path, builds, rpm_name, module="php"):
     prefix = os.path.dirname(os.path.dirname(path))
     for b in builds:
         if b["module"] == module and (module == "php" and b["where"] == prefix
-                                      or b["source"] == "rpm" and b["where"] == rpm_name
+                                      or b["source"] == "rpm" and f"{b['where']} {b['version']}" == rpm_name
                                       or b["source"] == "dpkg" and _dpkg_owns(proot, b["where"], path)):
             return b
     if module != "php":
