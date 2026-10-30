@@ -16,7 +16,7 @@ RECORDS = [
      "origin": UBUNTU_2404, "evidence_url": "https://example.invalid/usn", "checked": "2026-10-21"},
     {"cve": CVE, "vendor": "sury", "stream": "*", "package": "php8.5", "branch": "8.5",
      "match": "vercmp-deb", "fixed": "8.5.12-1", "status": "fixed",
-     "origin": r"^8\.5\.\d+-", "evidence_url": "https://example.invalid/sury", "checked": "2026-10-21"},
+     "origin": r"^8\.5\.\d+-\d+(\+\S+)?$", "evidence_url": "https://example.invalid/sury", "checked": "2026-10-21"},
     {"cve": CVE, "vendor": "cpanel", "stream": "*", "package": "ea-php74", "branch": "7.4",
      "status": "unknown", "note": "backported without a version change",
      "evidence_url": "https://example.invalid/ea4", "checked": "2026-10-21"},
@@ -28,7 +28,7 @@ RECORDS = [
      "evidence_url": "https://example.invalid/php", "checked": "2026-10-21"},
     {"cve": CVE, "vendor": "rhel", "stream": "9", "package": "php", "branch": "8.2",
      "match": "vercmp-rpm", "fixed": "8.2.35-1.module+el9.8.0+25111+a1450321", "status": "fixed",
-     "origin": r"^8\.2\.\d+-\d+\.module\+el9\.", "evidence_url": "https://example.invalid/rhsa", "checked": "2026-10-21"},
+     "origin": r"^8\.2\.\d+-\d+\.module\+el9\.\d+\.\d+\+\d+\+[0-9a-f]{8}$", "evidence_url": "https://example.invalid/rhsa", "checked": "2026-10-21"},
 ]
 RECORDS = [{**r, "module": "php"} for r in RECORDS]
 UPSTREAM_85 = RECORDS[4]
@@ -148,8 +148,16 @@ class TestBundledData(unittest.TestCase):
                       validate_record({**RECORDS[0], "origin": "debian"}))
         self.assertIn("bad origin pattern '('", validate_record({**RECORDS[0], "origin": "("}))
         self.assertEqual(validate_record(RECORDS[0]), [])
-        self.assertIn("distro record needs an origin pattern anchored with ^",
+        self.assertIn("distro record needs an origin pattern anchored with ^ and $",
                       validate_record({**RECORDS[0], "origin": "ubuntu"}))
+
+    def test_validator_requires_origin_end_anchor(self):
+        # Review 2 #11: RHEL's '^8\.2\.\d+-\d+\.module\+el9\.' accepted '...a1450321.thirdparty1'.
+        rec = {**RECORDS[5], "origin": r"^8\.2\.\d+-\d+\.module\+el9\."}
+        self.assertIn("distro record needs an origin pattern anchored with ^ and $", validate_record(rec))
+        rebuild = b("rhel", "9", "php", "8.2.35-1.module+el9.8.0+25111+a1450321.thirdparty1", "vercmp-rpm")
+        self.assertEqual(resolve_one(rebuild, CVE, RECORDS)["status"], "unknown")
+        self.assertEqual(resolve_one(rebuild, "CVE-2026-109618", load_records())["status"], "unknown")
         self.assertEqual(validate_record(UPSTREAM_85), [])  # upstream versions need no origin
 
     def test_validator_library_record_needs_soname(self):

@@ -358,12 +358,14 @@ def _tampered(proot, b, path, runner):
     if b["source"] == "rpm":  # rpm -V exits 1 when a file differs or the package is gone
         out = runner(["rpm", "-V", "--noconfig", b["where"]], ok=(0, 1))
         bad = out is None or "is not installed" in out or any(
-            line.endswith(" " + path) and ("5" in line[:9] or "S" in line[:9] or line.startswith("missing"))
+            line.endswith(" " + path) and (line[0] in "S?" or line[2] in "5?" or line.startswith("missing"))
             for line in out.splitlines())
         return "it fails rpm -V" if bad else None
     if b["source"] != "dpkg":
         return None
     entry = _dpkg_owns(proot, b["where"], path)
+    if entry is None:  # the list changed since the owner was found
+        return "dpkg no longer lists it"
     try:  # lines: original, diverted to, package
         diverted = _slurp(proot, "/var/lib/dpkg/diversions").decode("utf-8", "replace").split("\n")[0::3]
     except FileNotFoundError:

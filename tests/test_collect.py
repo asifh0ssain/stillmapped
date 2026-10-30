@@ -1059,3 +1059,31 @@ class TestReview2(unittest.TestCase):
         self.assertEqual([x for x in r["results"] if x.get("mapping")], [])
         self.assertIn(f"pid 4242 runs {LIB} in another user namespace; its packages can't be trusted", r["problems"])
         self.assertEqual(code, 2)
+
+    def test_rpm_verify_question_mark_fails(self):
+        # #9: '?' (digest not computed) in the size or digest column counted as a pass.
+        lib = "/usr/lib64/libcrypto.so.3.5.8"
+        for verify in (f"..?......    {lib}\n", f"?........    {lib}\n"):
+            with self.subTest(verify=verify):
+                root = tempfile.mkdtemp()
+                write(root, "etc/os-release", 'ID=almalinux\nVERSION_ID="9.8"\n')
+                fake_proc(root, 23, "/usr/bin/openssl", maps=[lib])
+                runner = fake_runner({"rpm -qa": "openssl-libs\t1:3.5.8-2.el9_8", "rpm -V": verify,
+                                      "rpm -qf": "openssl-libs 1:3.5.8-2.el9_8\n"})
+                with patch.object(c, "_which", return_value="/usr/bin/rpm"):
+                    inv = c.collect(root, runner, libs={"openssl-libs": "openssl"}, files={"libcrypto.so.3": "openssl"})
+                self.assertEqual((inv["mappings"], any("fails rpm -V" in p for p in inv["problems"])), ([], True))
+
+    def test_file_list_rewritten_mid_scan_is_untraced_not_a_crash(self):
+        # #12: the second read of the list found nothing; AttributeError, exit 3.
+        host = TestLibraries.host(None)
+        fake_proc(host, 1, "/usr/sbin/sshd", maps=[LIB])
+        real, calls = c._dpkg_owns, []
+
+        def racy(proot, pkg, path):
+            calls.append(pkg)
+            return real(proot, pkg, path) if len(calls) == 1 else None
+        with patch.object(c, "_dpkg_owns", racy):
+            r, code = self.scan(host)
+        self.assertTrue(any("dpkg no longer lists it" in p for p in r["problems"]))
+        self.assertEqual(code, 2)

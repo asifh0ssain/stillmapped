@@ -40,8 +40,8 @@ def validate_record(r):
         # A distro fix is often backported onto an older upstream version, so a
         # rebuild with a higher version (or an epoch) would compare as newer.
         # Only the vendor's exact version format, anchored, proves the fix.
-        if r.get("match") != "upstream" and not str(r.get("origin", "")).startswith("^"):
-            problems.append("distro record needs an origin pattern anchored with ^")
+        if r.get("match") != "upstream" and not re.fullmatch(r"\^.*\$", str(r.get("origin", "")), re.S):
+            problems.append("distro record needs an origin pattern anchored with ^ and $")
     elif status == UNKNOWN:
         if not r.get("note"):
             problems.append("unknown record needs a note saying why")
