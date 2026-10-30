@@ -463,8 +463,9 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
             # In another user namespace (unshare -U, rootless Docker or Podman) a
             # plain user owns the root and can write its package database.
             foreign = os.readlink("ns/user", dir_fd=d) != userns
-            maps = [m for m in (line.split(None, 5) for line in _read(d, "maps").splitlines())
-                    if len(m) == 6 and m[5].startswith("/")]
+            with open(os.open("maps", os.O_RDONLY, dir_fd=d), encoding="utf-8", errors="replace") as fh:
+                maps = [m for m in (line.rstrip("\n").split(None, 5) for line in fh) if len(m) == 6 and m[5][:1] == "/"
+                        and (m[5] == exe or _PHP_MODULE.search(m[5]) or _lib_file(m[5], files))]  # streamed
             php = _php_path(exe, maps)
             subjects = {tuple(m[3:]): m for m in maps if m[5] == php or _lib_file(m[5], files)}  # each inode
             if php and php not in (k[2] for k in subjects):

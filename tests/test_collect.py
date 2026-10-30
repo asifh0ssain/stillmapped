@@ -1104,3 +1104,17 @@ class TestReview2(unittest.TestCase):
             r, code = self.scan(host)
         self.assertEqual(sum(1 for p in r["problems"] if "bundled copy" in p), 20)
         self.assertLessEqual(sum(1 for p in reads if p.endswith("pkg7.list")), 2)  # index build, plus nothing per path
+
+    def test_huge_maps_file_is_streamed(self):
+        # #7: /proc/PID/maps was read whole and split; 110 MB of lines cost ~245 MB.
+        import tracemalloc
+        host = TestLibraries.host(None)
+        d = fake_proc(host, 100, "/usr/bin/x", maps=[LIB])
+        with open(os.path.join(d, "maps"), "a") as fh:
+            fh.write(("7f000000-7f001000 r--p 00000000 01:02 3 /" + "d" * 3000 + "/f\n") * 5000)  # 15 MB
+        tracemalloc.start()
+        r, code = self.scan(host)
+        peak = tracemalloc.get_traced_memory()[1]
+        tracemalloc.stop()
+        self.assertEqual([x["status"] for x in r["results"] if x.get("mapping")], ["fixed"])
+        self.assertLess(peak, 5 << 20)
