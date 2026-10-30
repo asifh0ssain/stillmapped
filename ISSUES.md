@@ -40,12 +40,18 @@ Review 4 (out of scope). If the package itself sits in a user-writable prefix
 (a user's `pip install`), that user can change its code or data, and root runs
 it. Fix idea: document a root-owned install in the README.
 
+## Crypto++ is a false match (fix after step 5)
+
+Review 3 #9 fix. `libcrypto*.so*` also matches Crypto++'s `libcryptopp*.so*`,
+which is not OpenSSL. A host using Crypto++ gets "owned by libcrypto++N, which
+no record covers" (exit 2). Fix after step 5 with a narrower pattern that still
+catches pip's bundled `libcrypto-<hash>.so.3`, for example the stem followed by
+`-`, `.` or a digit, with a named test for each name.
+
 ## Fail-closed noise (exit 2 by design)
 
 Known consequences of the rules, not false passes:
 - Hosts running rootless Docker or Podman containers, and chrooted daemons.
-- Crypto++ (`libcryptopp*.so*` matches `libcrypto*.so*`): reported as owned by
-  a package no record covers.
 - A PHP build in a user-owned or group-writable prefix (for example
   `/usr/local` as `root:staff 2775` on older Debian): its version header is
   not evidence.
