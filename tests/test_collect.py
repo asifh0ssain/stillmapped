@@ -12,6 +12,8 @@ def fake_runner(outputs):
     """Runner stub: maps the command's first words (after docker's -H) to canned stdout."""
     def runner(cmd, ok=(0,)):
         words = [w for w in cmd if w not in c._DOCKER[1:]]
+        if any(w.startswith("[%{FILENAMES}") for w in words):  # rpm's file index: "rpm files"
+            return outputs.get("rpm files")
         return outputs.get(" ".join(words[:2]))
     return runner
 
@@ -424,7 +426,7 @@ class TestWorkers(unittest.TestCase):
         with patch.object(c, "_which", return_value="/usr/bin/rpm"):
             self.builds = c.from_rpm(("sles", "15.7"), fake_runner(
                 {"rpm -qa": "apache2-mod_php8\t(none):8.3.36-150700.3.24.1", "rpm -q": RPM_FILES}))[0]
-            runner = fake_runner({"rpm -qf": "apache2-mod_php8 (none):8.3.36-150700.3.24.1\n", "rpm -V": ""})
+            runner = fake_runner({"rpm files": "/usr/lib64/apache2/mod_php8.so\tapache2-mod_php8 (none):8.3.36-150700.3.24.1\n", "rpm -V": ""})
         self.assertEqual([b["package"] for b in self.builds], ["php8"])
         fake_proc(self.root, 300, "/usr/sbin/httpd-prefork", maps=["/usr/lib64/apache2/mod_php8.so (deleted)"])
         procs, _, problems = self.workers(runner)
@@ -551,7 +553,7 @@ class TestPanelRuntime(unittest.TestCase):
                 patch.object(c.os, "geteuid", return_value=0), \
                 patch.object(c, "_root_owned", return_value=True):
             inv = c.collect(root, fake_runner({"rpm -qa": self.RPM, "rpm -q": self.FILES, "rpm -V": "",
-                                              "rpm -qf": "ea-php82-php-fpm (none):8.2.34-1.1.1.cpanel\n"}))
+                                              "rpm files": "/opt/cpanel/ea-php82/root/usr/sbin/php-fpm\tea-php82-php-fpm (none):8.2.34-1.1.1.cpanel\n"}))
         return resolve(inv, [self.RECORD], ["CVE-TEST-0001"])
 
     def test_runtime_fix_record_does_not_fix_cli_or_running_php(self):
@@ -819,7 +821,7 @@ class TestPackageConsistency(unittest.TestCase):
                 root = tempfile.mkdtemp()
                 write(root, "etc/os-release", 'ID=almalinux\nVERSION_ID="9.8"\n')
                 fake_proc(root, 23, "/usr/bin/openssl", maps=[lib])
-                runner = fake_runner({"rpm -qa": "openssl-libs\t1:3.5.8-2.el9_8", "rpm -qf": "openssl-libs 1:3.5.8-2.el9_8\n",
+                runner = fake_runner({"rpm -qa": "openssl-libs\t1:3.5.8-2.el9_8", "rpm files": "/usr/lib64/libcrypto.so.3.5.8\topenssl-libs 1:3.5.8-2.el9_8\n",
                                       "rpm -V": verify})
                 with patch.object(c, "_which", return_value="/usr/bin/rpm"):
                     inv = c.collect(root, runner, libs={"openssl-libs": "openssl"}, files={"libcrypto.so.3": "openssl"})
@@ -1018,7 +1020,7 @@ class TestReview2(unittest.TestCase):
         write(root, "etc/os-release", 'ID=rhel\nVERSION_ID="9.4"\n')
         fake_proc(root, 9, "/usr/bin/app32", maps=["/usr/lib/libcrypto.so.3.0.7"])
         runner = fake_runner({"rpm -qa": "openssl-libs\t1:3.0.7-28.el9_4\nopenssl-libs\t1:3.0.7-24.el9\n",
-                              "rpm -qf": "openssl-libs 1:3.0.7-24.el9\n", "rpm -V": ""})
+                              "rpm files": "/usr/lib/libcrypto.so.3.0.7\topenssl-libs 1:3.0.7-24.el9\n/usr/lib64/libcrypto.so.3.0.7\topenssl-libs 1:3.0.7-28.el9_4\n", "rpm -V": ""})
         with patch.object(c, "_which", return_value="/usr/bin/rpm"):
             r, code = self.scan(root, [rec], runner, {"openssl-libs": "openssl"})
         self.assertEqual([(x["status"], x["build"]["version"]) for x in r["results"] if x.get("mapping")],
@@ -1072,7 +1074,7 @@ class TestReview2(unittest.TestCase):
                 write(root, "etc/os-release", 'ID=almalinux\nVERSION_ID="9.8"\n')
                 fake_proc(root, 23, "/usr/bin/openssl", maps=[lib])
                 runner = fake_runner({"rpm -qa": "openssl-libs\t1:3.5.8-2.el9_8", "rpm -V": verify,
-                                      "rpm -qf": "openssl-libs 1:3.5.8-2.el9_8\n"})
+                                      "rpm files": "/usr/lib64/libcrypto.so.3.5.8\topenssl-libs 1:3.5.8-2.el9_8\n"})
                 with patch.object(c, "_which", return_value="/usr/bin/rpm"):
                     inv = c.collect(root, runner, libs={"openssl-libs": "openssl"}, files={"libcrypto.so.3": "openssl"})
                 self.assertEqual((inv["mappings"], any("fails rpm -V" in p for p in inv["problems"])), ([], True))
@@ -1287,7 +1289,7 @@ class TestMountNamespace(unittest.TestCase):
         rec = {**OPENSSL, "vendor": "almalinux", "stream": "9", "package": "openssl-libs", "match": "vercmp-rpm",
                "branch": "3.5", "fixed": "1:3.5.8-2.el9_8", "origin": r"^1:3\.5\.\d+-\d+\.el9(_\d+)?$"}
         runner = fake_runner({"rpm -qa": "openssl-libs\t1:3.5.8-2.el9_8", "rpm -V": "",
-                              "rpm -qf": "openssl-libs 1:3.5.8-2.el9_8\n"})
+                              "rpm files": "/usr/lib64/libcrypto.so.3.5.8\topenssl-libs 1:3.5.8-2.el9_8\n"})
         for bound, want in ((False, [("200", "fixed")]), (True, [])):
             with self.subTest(bound=bound):
                 root = tempfile.mkdtemp()
@@ -1309,3 +1311,20 @@ class TestMountNamespace(unittest.TestCase):
         fake_proc(host, 90, "/memfd:php (deleted)")
         inv = c.collect(host, fake_runner({}))
         self.assertTrue(any(p.startswith("pid 90 runs /memfd:php (deleted)") for p in inv["problems"]))
+
+    def test_rpm_owner_lookup_is_one_query(self):
+        # Review 3 #10: one rpm -qf subprocess per distinct mapped path; 1,000 paths took 67 s.
+        root = tempfile.mkdtemp()
+        write(root, "etc/os-release", 'ID=almalinux\nVERSION_ID="9.8"\n')
+        fake_proc(root, 300, "/usr/bin/x", maps=[f"/tmp/m/libcrypto-{i}.so" for i in range(50)])
+        calls = []
+        base = fake_runner({"rpm -qa": "openssl-libs\t1:3.5.8-2.el9_8", "rpm files": "", "rpm -V": ""})
+
+        def runner(cmd, ok=(0,)):
+            calls.append(cmd[:2])
+            return base(cmd, ok)
+        with patch.object(c, "_which", side_effect=lambda n: "/usr/bin/rpm" if n == "rpm" else None):
+            inv = c.collect(root, runner, libs={"openssl-libs": "openssl"}, files={"libcrypto.so.3": "openssl"})
+        self.assertEqual(sum(1 for p in inv["problems"] if "bundled copy" in p), 50)
+        self.assertNotIn(["rpm", "-qf"], calls)
+        self.assertLessEqual(len(calls), 4)  # packages, re-read after the walk, file index

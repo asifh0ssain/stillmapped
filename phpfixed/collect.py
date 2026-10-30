@@ -398,11 +398,17 @@ def _dpkg_owner(proot, path, index):
     return index.get(path)
 
 
-def _rpm_owner(runner, path):
+def _rpm_owner(runner, path, index):
     """'name epoch:version-release' of the one rpm package instance that owns
-    path (multilib instances share a name, not a version), or None."""
-    out = runner(["rpm", "-qf", "--qf", "%{NAME} %{EPOCH}:%{VERSION}-%{RELEASE}\n", path])
-    return out.strip().replace("(none):", "") if out and len(out.split()) == 2 else None
+    path (multilib instances share a name, not a version), or None. index
+    caches {path: owners} from one rpm -qa query instead of rpm -qf per path."""
+    if not index:
+        out = runner(["rpm", "-qa", "--qf", "[%{FILENAMES}\t%{=NAME} %{=EPOCH}:%{=VERSION}-%{=RELEASE}\n]"])
+        index[None] = []
+        for p, _, owner in (line.partition("\t") for line in (out or "").splitlines()):
+            index.setdefault(p, []).append(owner.replace("(none):", ""))
+    owners = index.get(path, [])
+    return owners[0] if len(owners) == 1 else None
 
 
 def _owner(proot, path, builds, rpm_name, module="php"):
@@ -447,7 +453,7 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
     host = (host.st_dev, host.st_ino)
     by_root = {host: (list(builds), [])}  # root -> (builds, problems of its package database)
     use_rpm = any(b["source"] == "rpm" for b in builds)
-    owners, indexes, workers, mappings, extra, unreadable = {}, {}, [], [], [], 0
+    owners, indexes, rpm_index, workers, mappings, extra, unreadable = {}, {}, {}, [], [], [], 0
     try:
         own = [os.readlink(os.path.join(proc, "self/ns", n)) for n in ("user", "mnt")]
     except OSError:
@@ -492,7 +498,7 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
                 # mount) can see another file at the packaged path under the same root.
                 ck = (key, ns[1], path, module)
                 if ck not in owners:
-                    rpm_name = use_rpm and not in_container and _rpm_owner(runner, path)
+                    rpm_name = use_rpm and not in_container and _rpm_owner(runner, path, rpm_index)
                     b = _owner(proot, path, by_root[key][0], rpm_name, module)
                     why = b and _tampered(proot, b, path, runner) or b
                     if why is b and b and b["source"] == "rpm" and ns[1] != own[1] and not _same_file(proot, root, path):
