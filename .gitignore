@@ -14,3 +14,5 @@ build/
 sync/cache/
 demo/out/
 demo/cache/
+tools/sync/snapshots/
+tools/sync/out/
