@@ -21,8 +21,7 @@ First public release.
   installed build are reported and give exit 2.
 - Data: one file per advisory, every record validated on load; an invalid
   record stops the run. Conflicting records resolve to unknown.
-- Version ordering follows dpkg's verrevcmp and rpm's rpmvercmp, checked
-  against the real tools in CI.
+- Version ordering follows dpkg's verrevcmp and rpm's rpmvercmp.
 - Run as root, commands are found in `/usr/bin:/bin` only.
 - Every running PHP is traced to the package (dpkg file lists, `rpm -qf`) or
   root-owned source build that installed it, reading containers through
