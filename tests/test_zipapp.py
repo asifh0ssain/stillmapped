@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -25,10 +26,12 @@ class TestZipapp(unittest.TestCase):
             again = subprocess.run([os.path.join(REPO, "ci", "zipapp.sh"), os.path.join(d, "again")],
                                    capture_output=True, text=True, check=True)
             self.assertEqual(again.stdout, out.stdout)
-            bad = subprocess.run([app, "--cve", "CVE-NOT-REAL"], capture_output=True, text=True)
+            # CI run #1: python:slim has no /usr/bin/python3 (the shebang is for real installs), so run it
+            # with this interpreter.
+            bad = subprocess.run([sys.executable, app, "--cve", "CVE-NOT-REAL"], capture_output=True, text=True)
             self.assertEqual((bad.returncode, bad.stderr), (3, "stillmapped: no bundled data for CVE-NOT-REAL\n"))
             # Records load from inside the zip (an unknown CVE alone does not prove that).
-            n = subprocess.run(["python3", "-c", "import sys; sys.path.insert(0, sys.argv[1]); "
+            n = subprocess.run([sys.executable, "-c", "import sys; sys.path.insert(0, sys.argv[1]); "
                                 "from stillmapped.resolve import load_records; print(len(load_records()))", app],
                                capture_output=True, text=True, check=True, cwd=d)
             self.assertGreater(int(n.stdout), 0)
