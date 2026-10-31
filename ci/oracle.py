@@ -39,7 +39,8 @@ def dpkg_cmp(a, b):
 def rpm_cmps(pairs):
     with tempfile.NamedTemporaryFile("w", suffix=".lua", delete=False) as f:
         for a, b in pairs:
-            f.write(f"print(rpm.vercmp({a!r}, {b!r}))\n")
+            # rpm's Lua print adds no separator inside %{lua:} (CI run #1), so write one per line.
+            f.write(f"print(rpm.vercmp({a!r}, {b!r}) .. \"\\n\")\n")
     try:
         out = subprocess.run(["rpm", "--eval", f"%{{lua: dofile('{f.name}')}}"],
                              capture_output=True, text=True, check=True).stdout
