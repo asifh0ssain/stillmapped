@@ -30,7 +30,11 @@ jobs:
           - { image: "ubuntu:26.04", source: dpkg, check: verdict }
           - { image: "almalinux:9", source: rpm, oracle: rpm }
           - { image: "opensuse/leap:15.6", source: rpm, py: python3.11 }
-    container: ${{ matrix.image }}
+    container:
+      image: ${{ matrix.image }}
+      # CI run #1: php-fpm workers run as www-data; root needs SYS_PTRACE to read
+      # another user's /proc/PID/maps, and CHECKPOINT_RESTORE for map_files.
+      options: --cap-add CHECKPOINT_RESTORE --cap-add SYS_PTRACE
     env:
       DEBIAN_FRONTEND: noninteractive
     steps:
