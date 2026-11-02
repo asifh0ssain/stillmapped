@@ -1,0 +1,32 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+permissions: {}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # The only job, and the only one that may write: it creates the release.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The tag must equal the package version
+        run: |
+          v=$(python3 -I -c 'import sys; sys.path.insert(0, "."); import stillmapped; print(stillmapped.__version__)')
+          test "$GITHUB_REF_NAME" = "v$v"
+      - run: python3 -m unittest discover -s tests -t .
+      - name: Build the zipapp and stillmapped.sha256
+        run: sh ci/zipapp.sh dist
+      - name: Check the hash file
+        run: cd dist && sha256sum -c stillmapped.sha256
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" dist/stillmapped dist/stillmapped.sha256
+          --repo "$GITHUB_REPOSITORY" --verify-tag --title "stillmapped $GITHUB_REF_NAME"
+          --notes "See CHANGELOG.md. Check the download with: sha256sum -c stillmapped.sha256"
