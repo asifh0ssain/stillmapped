@@ -57,3 +57,11 @@ Known consequences of the rules, not false passes:
   not evidence.
 - If the one `rpm -qa` file query fails, every mapped libcrypto is reported as
   "bundled copy" (the reason is wrong; the exit code is right).
+
+## Ubuntu has no "not affected" records yet
+
+Real-host test, 2026-11-02. On Ubuntu 24.04 the default run leaves 52 CVEs not
+judged: no vendor record for ubuntu 24.04. Ubuntu's CVE tracker states "not
+affected" per release, but `tools/sync` reads Ubuntu's OSV feed, which lists
+fixes only. Fix idea: read the tracker's per-release status and emit
+`not-affected` records, as for Debian.

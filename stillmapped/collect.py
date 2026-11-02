@@ -193,22 +193,23 @@ def from_docker(runner=run):
     ids = sorted(set(ids.split()))
     if not ids:
         return [], []
-    out = runner(_DOCKER + ["image", "inspect", "--format",
-                            "{{.Id}}\t{{json .RepoTags}}\t{{json .Config.Env}}"] + ids)
-    if out is None:
-        return [], ["docker image inspect failed; images not checked"]
-    builds = []
+    # .Config, not .Config.Env: one image with no Env key (opensuse/leap) failed the
+    # whole batch (real host, 2026-11-02). A batch that still fails is retried per image.
+    inspect = _DOCKER + ["image", "inspect", "--format", "{{.Id}}\t{{json .RepoTags}}\t{{json .Config}}"]
+    out = runner(inspect + ids)
+    outs = [(None, out)] if out is not None else [(i, runner(inspect + [i])) for i in ids]
+    builds, problems = [], [f"docker image inspect failed for {i}; that image not checked" for i, o in outs if o is None]
     try:
-        for line in out.splitlines():
-            image, tags, env = line.split("\t")
-            tags, env = json.loads(tags) or [], json.loads(env) or []
+        for line in "\n".join(o for _, o in outs if o).splitlines():
+            image, tags, config = line.split("\t")
+            tags, env = json.loads(tags) or [], (json.loads(config) or {}).get("Env") or []
             env = dict(p.split("=", 1) for p in env if "=" in p)
             version = env.get("PHP_VERSION")
             if version and env.get("PHP_SHA256"):
                 builds.append(_upstream("docker", version, ", ".join(tags) or image))
     except (ValueError, TypeError, AttributeError):
-        return builds, ["unreadable docker image metadata; images not fully checked"]
-    return builds, []
+        return builds, problems + ["unreadable docker image metadata; images not fully checked"]
+    return builds, problems
 
 
 def from_directadmin(root="/"):

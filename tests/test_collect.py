@@ -278,7 +278,7 @@ class TestDocker(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def docker(self, *images):
-        lines = "\n".join(f"{i}\t{json.dumps(tags)}\t{json.dumps(env)}" for i, tags, env in images)
+        lines = "\n".join(f"{i}\t{json.dumps(tags)}\t{json.dumps({'Env': env})}" for i, tags, env in images)
         calls = []
 
         def runner(cmd):
@@ -308,6 +308,34 @@ class TestDocker(unittest.TestCase):
         # Audit: a 'null' Env crashed the whole run.
         (builds, problems), _ = self.docker(("sha256:a", None, None))
         self.assertEqual((builds, problems), ([], []))
+
+    def test_image_without_env_does_not_hide_the_php_image(self):
+        # Real host, 2026-11-02: opensuse/leap:15.6 has no Config.Env, so the old
+        # {{json .Config.Env}} template made docker exit 1 for the whole batch.
+        configs = {"sha256:leap": (["opensuse/leap:15.6"], {"Cmd": ["/bin/bash"], "Labels": {"x": "y"}}),
+                   "sha256:php": (["php:8.4-fpm"], {"Env": ["PHP_VERSION=8.4.14", "PHP_SHA256=ab"]})}
+
+        def docker(cmd):  # like Go's template: a missing map key is an error for the whole call
+            if "ls" in cmd:
+                return "\n".join(configs)
+            ids = [w for w in cmd if w in configs]
+            if ".Config.Env" in cmd[-1 - len(ids)] and any("Env" not in configs[i][1] for i in ids):
+                return None
+            return "\n".join(f"{i}\t{json.dumps(configs[i][0])}\t{json.dumps(configs[i][1])}" for i in ids)
+        builds, problems = c.from_docker(docker)
+        self.assertEqual(problems, [])
+        self.assertEqual([(b["where"], b["version"]) for b in builds], [("php:8.4-fpm", "8.4.14")])
+
+    def test_one_failing_image_is_the_only_one_unchecked(self):
+        php = "sha256:php\t[\"php:8.4-fpm\"]\t" + json.dumps({"Env": ["PHP_VERSION=8.4.14", "PHP_SHA256=ab"]})
+
+        def docker(cmd):
+            if "ls" in cmd:
+                return "sha256:bad\nsha256:php"
+            return php if cmd[-1] == "sha256:php" and "sha256:bad" not in cmd else None
+        builds, problems = c.from_docker(docker)
+        self.assertEqual([b["where"] for b in builds], ["php:8.4-fpm"])
+        self.assertEqual(problems, ["docker image inspect failed for sha256:bad; that image not checked"])
 
     def test_daemon_down_is_a_problem(self):
         builds, problems = c.from_docker(lambda cmd: None)

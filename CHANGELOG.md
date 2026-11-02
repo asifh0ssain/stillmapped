@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.2 (2026-11-02)
+
+- docker: one image without Env no longer hides all images, found on a real
+  host. `opensuse/leap:15.6` has no `Config.Env`, so `docker image inspect`
+  with the `{{json .Config.Env}}` template failed for the whole batch and
+  every image was reported unchecked (exit 2). The scanner now reads
+  `{{json .Config}}`; if the batch still fails, each image is inspected on its
+  own and only an image that fails is reported unchecked.
+
 ## 0.1.1 (2026-11-02)
 
 Data refresh. The scanner code does not change.
