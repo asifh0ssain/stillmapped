@@ -83,8 +83,14 @@ def debian(snap, cve, module, out, eol):
         pkg = DEB_LIBCRYPTO[stream][0] if module == "openssl" else src
         rec = {"vendor": "debian", "stream": stream, "package": pkg, "evidence_url": url}
         f, urgency, adv = fixed.get((src, suite)) or fixed.get((src, "(unstable)")) or (None, "", "")
-        if f in (None, "(not affected)"):
-            out.skip(cve, "debian", stream, pkg, f"no fixed version for {suite}" if f is None else "not affected")
+        if f is None:
+            out.skip(cve, "debian", stream, pkg, f"no fixed version for {suite}")
+        elif f == "(not affected)":  # owner, 2026-11-02: a record, for the release's own builds of its one branch
+            vs, o = {v for v, _ in rows}, {origin.build(origin.debian(stream), v) for v, _ in rows}
+            if {s for _, s in rows} != {"fixed"} or len({branch(v) for v in vs}) != 1 or len(o) != 1 or None in o:
+                out.skip(cve, "debian", stream, pkg, f"not affected, but {suite} ships {sorted(vs)}: not one branch in the {suite} format")
+            else:
+                out.add(cve, module, {**rec, "branch": branch(vs.pop()), "status": "not-affected", "origin": o.pop(), "evidence": f"{src} {suite}: not affected"})
         elif f == "(unfixed)":
             states, branches = {s for _, s in rows}, {branch(v) for v, _ in rows}
             if urgency or states != {"vulnerable"} or len(branches) != 1:
@@ -147,10 +153,6 @@ def _fixed(entry):
     return [e["fixed"] for r in entry.get("ranges", []) for e in r.get("events", []) if "fixed" in e]
 
 
-def _usn_order(vuln):
-    return tuple(int(x) for x in re.findall(r"\d+", vuln["id"]))
-
-
 def ubuntu(snap, index, cve, module, out):
     for stream, vulns in index.items():
         eco, src = UBUNTU[stream], UBU_SRC[module][stream]
@@ -182,7 +184,7 @@ def ubuntu(snap, index, cve, module, out):
         # Owner's rule: the highest of the versions the CVE record and its USNs
         # give; the receipt is the first USN that carries exactly that version.
         top = highest("vercmp-deb", [f] + [x for fx in usns.values() for x in fx])
-        carry = sorted((u for u, fx in usns.items() if fx == [top]), key=lambda u: _usn_order({"id": u}))
+        carry = sorted((u for u, fx in usns.items() if fx == [top]), key=lambda u: tuple(int(x) for x in re.findall(r"\d+", u)))
         o = top and origin.ubuntu(top)
         if not carry or not o:
             why = f"{top} is not in Ubuntu's format" if carry else f"no USN carries the highest fix ({top})"
@@ -216,6 +218,13 @@ def rhel(snap, cve, module, out, eol):
         stack += n.get("branches", [])
         if n.get("product", {}).get("name") in RHEL_MAIN:
             main.add(n["product"]["product_id"])
+    # Owner, 2026-11-02: "not affected" gives a record only where Red Hat names the branch (a php:X.Y module stream);
+    # so does "affected" (review 8 F2), else the default run would skip a CVE Red Hat states is open.
+    ps = v.get("product_status", {})
+    for st, key in (("not-affected", "known_not_affected"), ("not-fixed", "known_affected")):
+        for br in sorted({m[1] for p in ps.get(key, []) if (m := re.fullmatch(rf"red_hat_enterprise_linux_9:{pkg}::php:(\d+\.\d+)", p))}):
+            out.add(cve, module, {"vendor": "rhel", "stream": "9", "package": pkg, "branch": br, "status": st, "evidence_url": f"https://access.redhat.com/security/cve/{cve}",
+                                  "evidence": f"Red Hat VEX: {pkg} module stream php:{br} {key}", **({"origin": origin.fill(origin.RHEL[1], br)} if st == "not-affected" else {})})
     groups = {}  # module stream (None for a plain package) -> {version: [product ids]}
     for pid in v.get("product_status", {}).get("fixed", []):
         m = _RH_ID.match(pid)
@@ -223,8 +232,8 @@ def rhel(snap, cve, module, out, eol):
             ver = f"{m[4]}-{m[5]}" if m[3] == "0" else f"{m[3]}:{m[4]}-{m[5]}"  # rpm shows epoch 0 as (none)
             groups.setdefault(m[7], {}).setdefault(ver, []).append(pid)
     if not groups:
-        affected = f"red_hat_enterprise_linux_9:{pkg}" in v.get("product_status", {}).get("known_affected", [])
-        return out.skip(cve, "rhel", "9", pkg, "affected, no fix (branch not stated)" if affected else "no fixed build in the RHEL 9 main stream")
+        return out.skip(cve, "rhel", "9", pkg, "affected, no fix (branch not stated)" if f"red_hat_enterprise_linux_9:{pkg}" in ps.get("known_affected", []) else
+                        "not affected, branch not stated" if f"red_hat_enterprise_linux_9:{pkg}" in ps.get("known_not_affected", []) else "no fixed build in the RHEL 9 main stream")
     for stream_mod, vers in sorted(groups.items(), key=lambda g: str(g[0])):
         ver = highest("vercmp-rpm", vers)  # owner's rule when architectures disagree
         ids = vers.get(ver, [])
@@ -249,7 +258,7 @@ def sles(snap, cve, module, out, eol):
         m = _SUSE_ID.match(pid)
         if m and not m[3] and m[4] in SLES_PKG[module]:
             groups.setdefault((m[2], m[4]), {}).setdefault(f"{m[5]}-{m[6]}", []).append(m[1])
-    if not groups:
+    if not groups:  # SUSE's "not affected" names no version, so no branch, and gives no record
         return out.skip(cve, "sles", "*", "*", "no recommended build for a SLES 15 service pack")
     for (sp, pkg), vers in sorted(groups.items()):
         ver = highest("vercmp-rpm", vers)  # owner's rule when products disagree

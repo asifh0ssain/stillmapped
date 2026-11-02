@@ -1,15 +1,14 @@
-"""Vendor version grammars and the anchored origin patterns built from them.
-
-A template is the origin pattern with placeholders. The same template parses
-the vendor's fixed version (placeholders become capture groups) and builds the
-origin (placeholders become the parsed literals), so a fixed version that does
-not fit the vendor's grammar gives no origin, and so no record.
-  <E> epoch with its colon, kept literal (or absent)
-  <M> <m> major and minor, kept literal
-  <P> upstream patch level: \\d+, or literal when pinned (see pin)
-  <S> SUSE codestream marker such as 150700, kept literal
-Every template is anchored with ^ and $ and has no |.
-"""
+# Vendor version grammars and the anchored origin patterns built from them.
+#
+# A template is the origin pattern with placeholders. The same template parses
+# the vendor's fixed version (placeholders become capture groups) and builds the
+# origin (placeholders become the parsed literals), so a fixed version that does
+# not fit the vendor's grammar gives no origin, and so no record.
+#   <E> epoch with its colon, kept literal (or absent)
+#   <M> <m> major and minor, kept literal
+#   <P> upstream patch level: \d+, or literal when pinned (see pin)
+#   <S> SUSE codestream marker such as 150700, kept literal
+# Every template is anchored with ^ and $ and has no |.
 
 import re
 
@@ -52,6 +51,10 @@ def build(templates, version, final=None):
         lit = {**v, "E": v["E"] or "", "P": v["P"] if pin else r"\d+"}
         return re.sub(r"<(\w)>", lambda g: lit[g[1]], t)
     return None
+
+
+def fill(template, br):  # origin for every build of branch br, when the vendor names no version
+    return re.sub(r"<(\w)>", lambda g: {"E": "", "M": br.split(".")[0], "m": br.split(".")[1], "P": r"\d+"}[g[1]], template)
 
 
 def ubuntu(version):
