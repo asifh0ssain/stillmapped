@@ -192,11 +192,11 @@ group- or world-writable. A copy that a user can write lets that user change
 what root runs and what it reports.
 
 Install the release file. Download `stillmapped` and `stillmapped.sha256`
-from the v0.1.0 release into one directory, check the hash, then install as
+from the latest release into one directory, check the hash, then install as
 root:
 
-    curl -fLO https://github.com/asifh0ssain/stillmapped/releases/download/v0.1.0/stillmapped
-    curl -fLO https://github.com/asifh0ssain/stillmapped/releases/download/v0.1.0/stillmapped.sha256
+    curl -fLO https://github.com/asifh0ssain/stillmapped/releases/latest/download/stillmapped
+    curl -fLO https://github.com/asifh0ssain/stillmapped/releases/latest/download/stillmapped.sha256
     sha256sum -c stillmapped.sha256
     install -o root -g root -m 0755 stillmapped /usr/local/bin/stillmapped
 
