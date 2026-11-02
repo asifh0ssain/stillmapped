@@ -268,7 +268,7 @@ per advisory, listing several CVEs), with one record per vendor build:
 {
   "vendor": "debian", "stream": "12", "package": "php8.2", "branch": "8.2",
   "status": "fixed", "match": "vercmp-deb", "fixed": "8.2.35-1~deb12u1",
-  "origin": "^8\\.2\\.\\d+-\\d+~deb12u\\d+$",
+  "origin": "^8\\.2\\.\\d+-\\d+[~+]deb12u\\d+$",
   "evidence_url": "https://security-tracker.debian.org/tracker/CVE-2026-109618",
   "checked": "2026-10-22"
 }

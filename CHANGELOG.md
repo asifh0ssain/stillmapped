@@ -18,6 +18,9 @@
   `not_judged` field lists them. No effect on the exit code. With `--cve`,
   unchanged.
 - The "no verified record" reason names the module (OpenSSL, not PHP).
+- Debian origins accept both release markers, `[~+]debNuM` (point updates
+  use `~`, security updates `+`), so a fix in a `+deb13u1` build no longer
+  rejects the release's own later `~deb13u3` build (CI run #3).
 - The hand-checked records (`php2shell.json`) moved to
   `tools/sync/hand/` as the generator's oracle.
 
