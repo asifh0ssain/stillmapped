@@ -16,7 +16,9 @@ _GROUPS = {"E": r"(\d+:)?", "M": r"(\d+)", "m": r"(\d+)", "P": r"(\d+)", "S": r"
 
 
 def debian(stream):
-    return [rf"^<E><M>\.<m>\.<P>-\d+~deb{stream}u\d+$", rf"^<E><M>\.<m>\.<P>-\d+\+deb{stream}u\d+$"]
+    # Debian uses both markers in one release: ~debNuM for point updates,
+    # +debNuM for security (CI run #3, owner 2026-11-02).
+    return [rf"^<E><M>\.<m>\.<P>-\d+[~+]deb{stream}u\d+$"]
 
 
 # The second module template is for builds whose minor carries Red Hat's

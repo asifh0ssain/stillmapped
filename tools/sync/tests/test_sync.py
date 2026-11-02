@@ -17,11 +17,11 @@ DEB12, DEB13 = origin.debian("12"), origin.debian("13")
 # Design note section 4: (templates, vendor fixed version, EOL final or None,
 # expected origin, the vendor's next update, versions that must fail).
 TABLE = [
-    (DEB12, "8.2.35-1~deb12u1", None, r"^8\.2\.\d+-\d+~deb12u\d+$", "8.2.36-1~deb12u1",
-     ["8.2.35-1~deb12u1+thirdparty1", "1:8.2.35-1~deb12u1", "8.2.35-1+deb12u1", "8.2.35-1~deb12u1+b1",
+    (DEB12, "8.2.35-1~deb12u1", None, r"^8\.2\.\d+-\d+[~+]deb12u\d+$", "8.2.36-1+deb12u1",
+     ["8.2.35-1~deb12u1+thirdparty1", "1:8.2.35-1~deb12u1", "8.2.35-1~deb12u1+b1", "8.2.35-1-deb12u1",
       "8.2.99-1+0~20261022.1+debian12~1.gbp", "8.3.1-1~deb12u1"]),
-    (DEB13, "8.4.27-1~deb13u1", None, r"^8\.4\.\d+-\d+~deb13u\d+$", "8.4.28-1~deb13u1", ["8.4.27-1~deb12u1"]),
-    (DEB12, "3.0.14-1~deb12u2", None, r"^3\.0\.\d+-\d+~deb12u\d+$", "3.0.22-1~deb12u2",
+    (DEB13, "8.4.27-1~deb13u1", None, r"^8\.4\.\d+-\d+[~+]deb13u\d+$", "8.4.28-1~deb13u1", ["8.4.27-1~deb12u1"]),
+    (DEB12, "3.0.14-1~deb12u2", None, r"^3\.0\.\d+-\d+[~+]deb12u\d+$", "3.0.22-1~deb12u2",
      ["3.0.14-1+thirdparty1", "1:3.0.14-1~deb12u2", "3.0.14-1~deb13u1"]),
     (origin.RHEL, "8.2.35-1.module+el9.8.0+25111+a1450321", None,
      r"^8\.2\.\d+-\d+\.module\+el9\.\d+\.\d+\+\d+\+[0-9a-f]{8}$", "8.2.36-1.module+el9.8.0+25200+b2c3d4e5",
@@ -67,6 +67,17 @@ class TestOrigins(unittest.TestCase):
             self.assertEqual(o, want)
             self.assertTrue(re.search(o, nxt))
             self.assertEqual([b for b in bad if re.search(o, b)], [], fixed)
+
+    def test_debian_marker_accepts_both_tilde_and_plus_builds(self):
+        # CI run #3: a fix in 3.5.1-1+deb13u1 rejected trixie's own 3.5.7-1~deb13u3.
+        for fixed in ("3.5.1-1+deb13u1", "3.5.4-1~deb13u1"):
+            o = origin.build(DEB13, fixed)
+            self.assertEqual(o, r"^3\.5\.\d+-\d+[~+]deb13u\d+$")
+            for good in ("3.5.7-1~deb13u3", "3.5.1-1+deb13u1", "3.5.8-1+deb13u4"):
+                self.assertTrue(re.search(o, good), (fixed, good))
+            for bad in ("3.5.7-1~deb13u3+thirdparty1", "3.5.1-1+deb13u1+thirdparty1", "1:3.5.7-1~deb13u3",
+                        "1:3.5.1-1+deb13u1", "3.5.7-1~deb12u3", "3.5.7-1~~deb13u3"):
+                self.assertFalse(re.search(o, bad), (fixed, bad))
 
     def test_outside_the_grammar_gives_no_origin(self):
         self.assertIsNone(origin.build(DEB12, "8.2.35-1~deb13u1"))
@@ -187,7 +198,7 @@ class TestNotAffected(unittest.TestCase):
         out = self.deb(("openssl", "bookworm", "3.0.17-1~deb12u2"), ("", "bookworm (security)", "3.0.17-1~deb12u3"))
         (r,) = out.records[("CVE-2024-0001", "openssl")].values()
         self.assertEqual((r["status"], r["branch"], r["origin"], r["package"], r["evidence_url"]),
-                         ("not-affected", "3.0", r"^3\.0\.\d+-\d+~deb12u\d+$", "libssl3", self.URL))
+                         ("not-affected", "3.0", r"^3\.0\.\d+-\d+[~+]deb12u\d+$", "libssl3", self.URL))
         self.assertNotIn("fixed", r)
 
     def test_debian_not_affected_on_two_branches_or_outside_the_format_gives_no_record(self):

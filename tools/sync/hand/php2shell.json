@@ -4,11 +4,11 @@
   "cves": ["CVE-2026-109618", "CVE-2026-109619"],
   "note": "Every record was checked against the vendor's own page on the date in 'checked'. Builds with no matching record resolve to 'unknown', never 'fixed'. 'origin' is an anchored pattern the installed version must match to be called fixed, so a third-party rebuild with a higher version is not mistaken for the vendor's patched one. Vendor 'upstream' covers builds compiled from php.net source: official Docker images, Homebrew and DirectAdmin CustomBuild.",
   "records": [
-    {"vendor": "debian", "origin": "^8\\.2\\.\\d+-\\d+~deb12u\\d+$", "stream": "12", "package": "php8.2", "branch": "8.2",
+    {"vendor": "debian", "origin": "^8\\.2\\.\\d+-\\d+[~+]deb12u\\d+$", "stream": "12", "package": "php8.2", "branch": "8.2",
      "match": "vercmp-deb", "fixed": "8.2.35-1~deb12u1", "status": "fixed",
      "evidence_url": "https://security-tracker.debian.org/tracker/CVE-2026-109618",
      "evidence": "bookworm (security) 8.2.35-1~deb12u1 fixed, DLA-4848-1", "checked": "2026-10-22"},
-    {"vendor": "debian", "origin": "^8\\.4\\.\\d+-\\d+~deb13u\\d+$", "stream": "13", "package": "php8.4", "branch": "8.4",
+    {"vendor": "debian", "origin": "^8\\.4\\.\\d+-\\d+[~+]deb13u\\d+$", "stream": "13", "package": "php8.4", "branch": "8.4",
      "match": "vercmp-deb", "fixed": "8.4.27-1~deb13u1", "status": "fixed",
      "evidence_url": "https://security-tracker.debian.org/tracker/CVE-2026-109618",
      "evidence": "trixie (security) 8.4.27-1~deb13u1 fixed, DSA-6574-1", "checked": "2026-10-22"},
