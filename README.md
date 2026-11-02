@@ -18,6 +18,8 @@ and never calls a build fixed on a guess.
 2. **Unknown is an answer.** When the tool can't prove a fix, it says
    `unknown` and exits 2. It never turns an ambiguous case into `fixed` or
    exit 0. A library it can't trace to its package is a problem, never fixed.
+   One exception, in the default run only: a CVE with no vendor record for
+   the build's distro and release is not judged (see Guarantees).
 3. **Every verdict has a receipt.** Package, version, the vendor's evidence
    URL, the date the record was checked, the PID, and the mapped file path.
    Plain JSON.
@@ -115,12 +117,12 @@ from the file that carries the fix.
     python3 -m stillmapped --all                  # also list fixed results
     python3 -m stillmapped --json                 # every result, always
 
-The text output lists not-fixed, unknown and restart-needed results, then one
-line with the number of fixed results. Run as root to see every running process.
+The text output lists not-fixed, unknown and restart-needed results, then the
+number of fixed and of not affected results. Run as root to see every running process.
 
 | Exit | Meaning |
 |---|---|
-| 0 | every build fixed, every part of the host checked |
+| 0 | every judged CVE fixed or not affected for every build, every part of the host checked |
 | 1 | a build is not fixed, or a worker needs a restart |
 | 2 | a build is unknown, or part of the host couldn't be checked |
 | 3 | error, or no bundled data for a requested CVE |
@@ -138,7 +140,19 @@ line with the number of fixed results. Run as root to see every running process.
   reached through a symlink counts as unknown. See
   [THREAT_MODEL.md](THREAT_MODEL.md): no non-root local user may cause a false
   `fixed` or a false exit 0.
-- Exit 0 needs every build found fixed and every running PHP traced to a
+- `not affected` needs the vendor's own statement for that release and branch,
+  and a version in the vendor's own format; it counts like `fixed` for the
+  exit code.
+- Without `--cve`, a CVE with no record for a build's vendor and release is not
+  judged: one `[INFO]` line gives the count ("4 CVEs: no vendor record for
+  debian 12, not judged") and the JSON `not_judged` field lists them. Exit 0
+  does not cover them. Some are CVEs the vendor states are affected but the
+  data has no record for: SUSE states "affected" without a version, so a SLES
+  build gives no SUSE record for it. A release with few records (SLES 15 SP4
+  has 16, Ubuntu 26.10 has 2) is in effect checked for those CVEs only. A
+  distro with no records at all for a module is still judged (unknown, exit
+  2). With `--cve`, every named CVE is judged.
+- Exit 0 needs every judged CVE fixed or not affected for every build, and every running PHP traced to a
   checked build. Run as non-root, it can't be 0. Without `--cve`, a module with
   no build on the host (for example no PHP) is an `[INFO]` line, "no PHP build
   found"; if no module is found at all, that is a problem (exit 2). With
@@ -231,15 +245,15 @@ Trust limits. These can give a wrong `fixed`:
 
 ## Status
 
-Bundled data: 155 CVEs (66 PHP, 89 OpenSSL), 1094 records, one file per
-CVE. `tools/sync` generated it from the vendor feeds snapshot of 2026-10-30
+Bundled data: 161 CVEs (66 PHP, 95 OpenSSL), 1208 records (1094 fixed, 80
+not affected, 34 not fixed), one file per CVE. `tools/sync` generated it from the vendor feeds snapshot of 2026-10-30
 (`20261030T231616Z`); every record comes from one primary vendor feed.
 
-| Distro | Records |
+| Distro | Records (of which not affected, not fixed) |
 |---|---|
-| Debian 12 / 13 | 116 / 102 |
+| Debian 12 / 13 | 157 (41, 0) / 110 (8, 0) |
 | Ubuntu 22.04 / 24.04 / 26.04 / 26.10 | 110 / 86 / 64 / 2 |
-| RHEL 9 | 177 |
+| RHEL 9 | 242 (31, 34) |
 | SLES 15 SP4 / SP5 / SP6 / SP7 | 16 / 26 / 45 / 130 |
 | php.net upstream | 220 |
 
@@ -260,7 +274,8 @@ per advisory, listing several CVEs), with one record per vendor build:
 }
 ```
 
-`status` is `fixed`, `not-fixed`, or `unknown` with a `note`. `origin` is the
+`status` is `fixed`, `not-fixed`, `not-affected` (with an `origin`, no
+`fixed`), or `unknown` with a `note`. `origin` is the
 vendor's exact version format, anchored with `^` and `$` and without `|`, which the installed version
 must match to be called fixed. Distros backport fixes onto old upstream
 versions, so without it a third-party rebuild with a higher version (or an
