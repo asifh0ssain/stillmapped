@@ -109,6 +109,7 @@ from the file that carries the fix.
   with a PHP module), traced to the package or source build that installed it,
   inside containers too. PHP that no checked build installed is reported, and so
   is PHP still running a pre-upgrade binary.
+- OpenSSL: every libcrypto*.so* mapped by a running process, traced to its package
 
 ## Usage
 
