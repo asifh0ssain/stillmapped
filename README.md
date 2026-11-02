@@ -254,8 +254,8 @@ Trust limits. These can give a wrong `fixed`:
 ## Status
 
 Bundled data: 161 CVEs (66 PHP, 95 OpenSSL), 1208 records (1094 fixed, 80
-not affected, 34 not fixed), one file per CVE. `tools/sync` generated it from the vendor feeds snapshot of 2026-10-30
-(`20261030T231616Z`); every record comes from one primary vendor feed.
+not affected, 34 not fixed), one file per CVE. `tools/sync` generated it from the vendor feeds snapshot of 2026-11-02
+(`20261102T224118Z`); every record comes from one primary vendor feed.
 
 | Distro | Records (of which not affected, not fixed) |
 |---|---|
