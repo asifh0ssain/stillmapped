@@ -1,10 +1,12 @@
 import contextlib
 import io
 import json
+import pathlib
+import re
 import unittest
 from unittest.mock import patch
 
-from stillmapped import cli
+from stillmapped import __version__, cli
 
 INV = {"os": {"id": "ubuntu", "stream": "24.04"}, "workers": [], "problems": [],
        "builds": [{"source": "dpkg", "vendor": "ubuntu", "stream": "24.04", "package": "php8.3",
@@ -176,6 +178,12 @@ class TestReleasePush(unittest.TestCase):
         self.assertNotIn("[NOT AFFECTED]", out)
         self.assertIn("\n0 fixed\n1 not affected\n", out)
         self.assertIn("[NOT AFFECTED] CVE-TEST-0002  debian/libssl3", all_out)
+
+
+class TestVersion(unittest.TestCase):
+    def test_pyproject_version_equals_package_version(self):
+        toml = (pathlib.Path(__file__).resolve().parent.parent / "pyproject.toml").read_text()
+        self.assertEqual(re.search(r'^version = "([^"]+)"', toml, re.M).group(1), __version__)
 
 
 if __name__ == "__main__":

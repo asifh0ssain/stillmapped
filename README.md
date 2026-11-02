@@ -191,10 +191,17 @@ group- or world-writable. A copy that a user can write lets that user change
 what root runs and what it reports.
 
 Install the release file. Download `stillmapped` and `stillmapped.sha256`
-from the project's GitHub Releases page into one directory, then, as root:
+from the v0.1.0 release into one directory, check the hash, then install as
+root:
 
+    curl -fLO https://github.com/asifh0ssain/stillmapped/releases/download/v0.1.0/stillmapped
+    curl -fLO https://github.com/asifh0ssain/stillmapped/releases/download/v0.1.0/stillmapped.sha256
     sha256sum -c stillmapped.sha256
     install -o root -g root -m 0755 stillmapped /usr/local/bin/stillmapped
+
+`sha256sum -c` must print `stillmapped: OK`; if not, stop. The release
+workflow (`.github/workflows/release.yml`) builds both files from the tagged
+tree after the unit tests pass.
 
 `stillmapped` is a single-file Python zipapp. To build the same file from
 source, run `ci/zipapp.sh`: it writes `dist/stillmapped` and
@@ -257,7 +264,7 @@ not affected, 34 not fixed), one file per CVE. `tools/sync` generated it from th
 | SLES 15 SP4 / SP5 / SP6 / SP7 | 16 / 26 / 45 / 130 |
 | php.net upstream | 220 |
 
-glibc and libxml2 come after OpenSSL passes CI.
+OpenSSL passes CI (run #4). glibc and libxml2 come next.
 
 ## Data
 
@@ -286,10 +293,12 @@ the vendor's own advisory page in `evidence_url`; a PR without one is closed.
 ## How it's tested
 
 - Unit tests, with a named regression test for every defect found in seven
-  reviews. They are run locally; the latest run was on Python 3.12.
-- CI has never run. The workflow (`.github/workflows/ci.yml`) is written: it
-  runs the unit tests on Python 3.9 to 3.14, installs each distro's own PHP in
-  Debian, Ubuntu, AlmaLinux and openSUSE containers, and diffs version ordering
-  against the real `dpkg --compare-versions` and rpm's `rpmvercmp`.
+  reviews.
+- CI (`.github/workflows/ci.yml`) runs on every push and is green: run #4,
+  commit dce2c73, 13 of 13 jobs pass. It runs the unit tests on Python 3.9 to
+  3.14, installs each distro's own PHP in Debian 12 and 13, Ubuntu 22.04, 24.04
+  and 26.04, AlmaLinux 9 and openSUSE Leap 15.6 containers, runs stillmapped
+  against it, and diffs version ordering against the real
+  `dpkg --compare-versions` and rpm's `rpmvercmp`.
 - `demo/run.sh` runs the live cases above in Docker. The latest run (above)
   was on amd64; all 4 checks passed.
