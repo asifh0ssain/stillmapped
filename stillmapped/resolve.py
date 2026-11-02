@@ -1,8 +1,9 @@
 """Match installed builds against verified vendor fix records.
 
 Policy: a build is only ever called "fixed" when a verified record for its
-exact vendor, stream, package and PHP branch says so and the version
-comparison agrees. Anything ambiguous resolves to "unknown", never to "fixed".
+exact vendor, stream, package and branch says so and the version comparison
+agrees, and "not affected" only when the vendor states it for that build.
+Anything ambiguous resolves to "unknown", never to "fixed".
 """
 
 import datetime
@@ -13,6 +14,8 @@ from importlib import resources
 from .vercmp import SCHEMES, branch, compare
 
 FIXED, NOT_FIXED, UNKNOWN, RESTART = "fixed", "not-fixed", "unknown", "restart-needed"
+NOT_AFFECTED = "not-affected"  # owner, 2026-11-02: counts like fixed for the exit code
+NAMES = {"php": "PHP", "openssl": "OpenSSL"}
 
 # 'branch' is mandatory: RHEL ships several PHP branches all named "php", and
 # without it an 8.3 build could be compared against an 8.2 fix and pass.
@@ -43,6 +46,11 @@ def validate_record(r):
         # No "|": "^a|.*$" is anchored at both ends yet matches anything.
         if r.get("match") != "upstream" and not re.fullmatch(r"\^[^|]*\$", str(r.get("origin", ""))):
             problems.append("distro record needs an origin pattern anchored with ^ and $, without |")
+    elif status == NOT_AFFECTED:
+        # The vendor's statement covers its own builds only; the origin
+        # pattern is what proves a build is one.
+        if r.get("fixed") or not re.fullmatch(r"\^[^|]*\$", str(r.get("origin", ""))):
+            problems.append("not-affected record needs an origin pattern anchored with ^ and $, without |, and no fixed version")
     elif status == UNKNOWN:
         if not r.get("note"):
             problems.append("unknown record needs a note saying why")
@@ -106,9 +114,9 @@ def resolve_one(build, cve, records):
     if not hits:
         return {**base, "status": UNKNOWN,
                 "reason": f"no verified record for {build['vendor']} {build['stream']} "
-                          f"{build['package']} (PHP {build['branch'] or '?'}); "
+                          f"{build['package']} ({NAMES.get(build['module'], build['module'])} {build['branch'] or '?'}); "
                           "check the vendor's advisory"}
-    if len({(r["status"], r.get("match"), r.get("fixed")) for r in hits}) > 1:
+    if len({(r["status"], r.get("match"), r.get("fixed"), r.get("origin")) for r in hits}) > 1:
         return {**base, "status": UNKNOWN,
                 "reason": "bundled records disagree for this build; check the vendor's advisory"}
     rec = hits[0]
@@ -118,6 +126,12 @@ def resolve_one(build, cve, records):
                 "reason": "vendor has not published a fixed build for this stream"}
     if rec["status"] == UNKNOWN:
         return {**base, "status": UNKNOWN, "reason": rec["note"]}
+    if rec["status"] == NOT_AFFECTED:
+        if not re.search(rec["origin"], build["version"]):
+            return {**base, "status": UNKNOWN, "reason": f"{build['version']} doesn't look like a {rec['vendor']} build; "
+                                                         "can't confirm the vendor's not-affected statement covers it"}
+        return {**base, "status": NOT_AFFECTED, "reason": f"{rec['vendor']} states {build['package']} "
+                                                          f"{build['branch']} in {build['stream']} is not affected"}
     if rec["match"] != build["scheme"]:
         return {**base, "status": UNKNOWN,
                 "reason": f"record uses {rec['match']} but build is {build['scheme']}"}
@@ -148,12 +162,25 @@ def resolve_mapping(m, cve, records):
 
 
 def resolve(inventory, records, cves, strict=True):
-    """strict (CVEs named): a module with no build is a problem; else only when no module has one."""
+    """strict (CVEs named): a module with no build is a problem; else only when no module has one.
+    Not strict (default run, owner 2026-11-02): a CVE with no record for a build's vendor and stream
+    is not judged, unless the data has no record of that module for the vendor and stream at all."""
     module = {r["cve"]: r["module"] for r in records}
+    have = {k for r in records for k in ((r["cve"], r["vendor"], r["stream"]), (r["module"], r["vendor"], r["stream"]))}
+    skipped = {}
+
+    def judged(b, cve):
+        known = lambda key, s: (key, b["vendor"], s) in have
+        if strict or known(cve, b["stream"]) or known(cve, "*") or not (known(b["module"], b["stream"]) or known(b["module"], "*")):
+            return True
+        skipped.setdefault(f"{b['vendor']} {b['stream']}", set()).add(cve)
+        return False
+
     builds = inventory["builds"]
-    results = [resolve_one(b, cve, records) for b in builds for cve in cves if b["module"] == module.get(cve)]
-    results += [r for m in inventory.get("mappings", []) for cve in cves if (r := resolve_mapping(m, cve, records))]
-    problems, info = list(inventory.get("problems", [])), []
+    results = [resolve_one(b, cve, records) for b in builds for cve in cves if b["module"] == module.get(cve) and judged(b, cve)]
+    results += [r for m in inventory.get("mappings", []) for cve in cves
+                if (r := resolve_mapping(m, cve, records)) and judged(m["build"], cve)]
+    problems, info = list(inventory.get("problems", [])), [f"{len(c)} CVEs: no vendor record for {k}, not judged" for k, c in sorted(skipped.items())]
     # Only the host's own builds count: a container must not change the host's result.
     absent = (mods := {module[c] for c in cves if c in module}) - {b["module"] for b in builds if b["db"] == "host"}
     for mod in sorted(absent):
@@ -163,11 +190,12 @@ def resolve(inventory, records, cves, strict=True):
               "into a program is not seen" for f in sorted({r["file"] for r in records if r["cve"] in cves and r.get("file")})]
     limits += ["PHP that no package owns is seen only while running as php, php-fpm, php-cgi, lsphp or frankenphp, or with libphp loaded."] * ("php" in mods)  # review 5 F1, F2
     stale = [w for w in inventory["workers"] if w["stale"]]
-    return {"results": results, "stale_workers": stale, "problems": problems, "info": info, "limits": limits}
+    return {"results": results, "stale_workers": stale, "problems": problems, "info": info, "limits": limits,
+            "not_judged": {k: sorted(c) for k, c in sorted(skipped.items())}}
 
 
 def exit_code(report):
-    """0 all fixed, 1 something not fixed or needing a restart, 2 something
+    """0 all fixed or not affected, 1 something not fixed or needing a restart, 2 something
     unknown or part of the host not checked."""
     statuses = {r["status"] for r in report["results"]}
     if NOT_FIXED in statuses or RESTART in statuses or report["stale_workers"]:

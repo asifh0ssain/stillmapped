@@ -164,6 +164,19 @@ class TestReleasePush(unittest.TestCase):
         self.assertIn("[FIXED] CVE-TEST-0002  debian/libssl3", all_out)
         self.assertEqual([r["status"] for r in json.loads(jout)["results"]], ["fixed"])
 
+    def test_not_affected_shown_as_not_affected_and_counted(self):
+        # Owner, 2026-11-02: "not-affected" counts like fixed and is shown as "not affected".
+        from stillmapped.resolve import load_records
+        na = {**OSSL_REC, "status": "not-affected"}
+        del na["match"], na["fixed"]
+        with patch.object(cli, "load_records", return_value=load_records(HAND_CVES) + [na]):
+            code, out, _ = run("--cve", "CVE-TEST-0002", inv=NO_PHP)
+            _, all_out, _ = run("--cve", "CVE-TEST-0002", "--all", inv=NO_PHP)
+        self.assertEqual(code, 0)
+        self.assertNotIn("[NOT AFFECTED]", out)
+        self.assertIn("\n0 fixed\n1 not affected\n", out)
+        self.assertIn("[NOT AFFECTED] CVE-TEST-0002  debian/libssl3", all_out)
+
 
 if __name__ == "__main__":
     unittest.main()

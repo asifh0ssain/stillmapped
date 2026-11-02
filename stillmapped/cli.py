@@ -6,7 +6,7 @@ import sys
 
 from . import __version__
 from .collect import collect
-from .resolve import FIXED, exit_code, load_records, resolve
+from .resolve import FIXED, NOT_AFFECTED, exit_code, load_records, resolve
 
 
 def _safe(s):
@@ -20,10 +20,10 @@ def _table(inv, report, show_all=False):
     print(f"stillmapped {__version__}  host: {_safe(inv['os']['id'])} {_safe(inv['os']['stream'])}")
     for i in report["info"]:
         print(f"\n[INFO] {i}")
-    shown = [r for r in report["results"] if show_all or r["status"] != FIXED]
+    shown = [r for r in report["results"] if show_all or r["status"] not in (FIXED, NOT_AFFECTED)]
     for r in shown:
         b = r["build"]
-        print(f"\n[{r['status'].upper()}] {r['cve']}  {_safe(b['vendor'])}/{_safe(b['package'])} {_safe(b['version'])}")
+        print(f"\n[{r['status'].upper().replace('NOT-AFFECTED', 'NOT AFFECTED')}] {r['cve']}  {_safe(b['vendor'])}/{_safe(b['package'])} {_safe(b['version'])}")
         print(f"  from:   {_safe(b['source'])}, {_safe(b['db'])} package database ({_safe(b['where'])})")
         if r.get("mapping"):
             print(f"  pid:    {r['mapping']['pid']} maps {_safe(r['mapping']['path'])}")
@@ -31,6 +31,7 @@ def _table(inv, report, show_all=False):
         if r["record"]:
             print(f"  source: {r['record']['evidence_url']} (checked {r['record']['checked']})")
     print(f"\n{sum(r['status'] == FIXED for r in report['results'])} fixed")
+    print(f"{sum(r['status'] == NOT_AFFECTED for r in report['results'])} not affected")
     if report["stale_workers"]:
         print(f"\n[RESTART NEEDED] {len(report['stale_workers'])} PHP worker(s) still run a "
               "deleted (pre-upgrade) binary. Restart php-fpm / the web server.")

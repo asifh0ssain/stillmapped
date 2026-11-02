@@ -255,5 +255,79 @@ class TestExitCode(unittest.TestCase):
         self.assertEqual((r["problems"], exit_code(r)), (["no PHP build found"], 2))
 
 
+
+# Owner, 2026-11-02: vendor "not affected" records, and the default run's
+# "not judged" rule. Fixture records only.
+DEB12_NA = {"cve": "CVE-TEST-0003", "module": "openssl", "vendor": "debian", "stream": "12", "package": "libssl3",
+            "branch": "3.0", "file": "libcrypto.so.3", "status": "not-affected", "origin": r"^3\.0\.\d+-\d+~deb12u\d+$",
+            "evidence_url": "https://security-tracker.debian.org/tracker/CVE-TEST-0003", "checked": "2026-11-02"}
+DEB12_FIX = {**DEB12_NA, "cve": "CVE-TEST-0004", "status": "fixed", "match": "vercmp-deb", "fixed": "3.0.14-1~deb12u2"}
+SSL = {"source": "dpkg", "vendor": "debian", "stream": "12", "package": "libssl3", "branch": "3.0",
+       "version": "3.0.17-1~deb12u3", "scheme": "vercmp-deb", "where": "libssl3", "module": "openssl", "db": "host"}
+
+
+class TestNotAffected(unittest.TestCase):
+    def test_not_affected_record_resolves_not_affected_and_exits_0(self):
+        r = resolve({"builds": [SSL], "workers": [], "problems": []}, [DEB12_NA], ["CVE-TEST-0003"])
+        self.assertEqual([x["status"] for x in r["results"]], ["not-affected"])
+        self.assertEqual(exit_code(r), 0)
+
+    def test_not_affected_needs_the_vendors_own_build(self):
+        odd = {**SSL, "version": "3.0.17-1+thirdparty1"}
+        self.assertEqual(resolve_one(odd, "CVE-TEST-0003", [DEB12_NA])["status"], "unknown")
+        self.assertEqual(resolve_one({**SSL, "branch": "3.5", "version": "3.5.1-1~deb12u1"}, "CVE-TEST-0003", [DEB12_NA])["status"], "unknown")
+
+    def test_validator_not_affected_needs_anchored_origin_and_no_fixed_version(self):
+        self.assertEqual(validate_record(DEB12_NA), [])
+        for bad in ({**DEB12_NA, "origin": None}, {**DEB12_NA, "origin": r"^3\.0|.*$"}, {**DEB12_NA, "fixed": "3.0.1-1~deb12u1"}):
+            self.assertTrue(validate_record(bad), bad)
+
+    def test_not_affected_and_fixed_for_one_build_disagree(self):
+        both = [DEB12_NA, {**DEB12_FIX, "cve": "CVE-TEST-0003"}]
+        self.assertEqual(resolve_one(SSL, "CVE-TEST-0003", both)["status"], "unknown")
+
+    def test_no_record_reason_names_the_module(self):
+        reason = resolve_one(SSL, "CVE-TEST-0009", [DEB12_NA])["reason"]
+        self.assertIn("(OpenSSL 3.0)", reason)
+        self.assertNotIn("PHP", reason)
+
+
+class TestDefaultRunNotJudged(unittest.TestCase):
+    INV = {"builds": [SSL], "workers": [], "problems": []}
+    CVES = ["CVE-TEST-0004", "CVE-TEST-0005", "CVE-TEST-0006"]
+    # 0005 and 0006 have records for Ubuntu only.
+    RECS = [DEB12_FIX, {**DEB12_FIX, "cve": "CVE-TEST-0005", "vendor": "ubuntu", "stream": "24.04"},
+            {**DEB12_FIX, "cve": "CVE-TEST-0006", "vendor": "ubuntu", "stream": "24.04"}]
+
+    def test_default_run_skips_cves_with_no_record_for_the_vendor_and_stream(self):
+        r = resolve(self.INV, self.RECS, self.CVES, strict=False)
+        self.assertEqual([(x["cve"], x["status"]) for x in r["results"]], [("CVE-TEST-0004", "fixed")])
+        self.assertEqual(r["info"], ["2 CVEs: no vendor record for debian 12, not judged"])
+        self.assertEqual(r["not_judged"], {"debian 12": ["CVE-TEST-0005", "CVE-TEST-0006"]})
+        self.assertEqual(exit_code(r), 0)
+
+    def test_named_cves_are_still_judged_unknown(self):
+        r = resolve(self.INV, self.RECS, self.CVES, strict=True)
+        self.assertEqual([x["status"] for x in r["results"]], ["fixed", "unknown", "unknown"])
+        self.assertEqual((r["info"], exit_code(r)), ([], 2))
+
+    def test_vendor_with_no_records_at_all_is_still_judged(self):
+        # Fail closed: a distro the data does not cover must not exit 0 unchecked.
+        fedora = {**SSL, "vendor": "fedora", "stream": "41", "version": "3.2.4-1.fc41", "scheme": "vercmp-rpm"}
+        r = resolve({**self.INV, "builds": [fedora]}, self.RECS, self.CVES, strict=False)
+        self.assertEqual([x["status"] for x in r["results"]], ["unknown"] * 3)
+        self.assertEqual((r["info"], exit_code(r)), ([], 2))
+
+    def test_record_for_another_package_or_branch_is_still_judged(self):
+        r = resolve({**self.INV, "builds": [{**SSL, "branch": "3.5", "version": "3.5.1-1~deb12u1"}]}, self.RECS, ["CVE-TEST-0004"], strict=False)
+        self.assertEqual(([x["status"] for x in r["results"]], exit_code(r)), (["unknown"], 2))
+
+    def test_mapped_library_follows_the_same_rule(self):
+        m = {"pid": "7", "path": "/usr/lib/libcrypto.so.3", "file": "libcrypto.so.3", "same": True, "build": SSL}
+        r = resolve({**self.INV, "mappings": [m]}, self.RECS, self.CVES, strict=False)
+        self.assertEqual(sorted(x["cve"] for x in r["results"]), ["CVE-TEST-0004", "CVE-TEST-0004"])
+        self.assertEqual(r["not_judged"], {"debian 12": ["CVE-TEST-0005", "CVE-TEST-0006"]})
+
+
 if __name__ == "__main__":
     unittest.main()
