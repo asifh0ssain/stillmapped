@@ -129,6 +129,52 @@ class TestTrust(unittest.TestCase):
                 self.assertEqual(resolve_one(build, "CVE-NONE", RECORDS)["trust"], want)  # unknown too
 
 
+class TestMutationSurvivors(unittest.TestCase):
+    """Deep verification Part 4: a named test for each surviving mutant M3 to M5, M7."""
+
+    def test_tilde_sorts_before_the_end_of_the_version(self):
+        # M3: with "~" equal to the end, a pre-release 1.0~rc1 compared equal to 1.0 and read fixed.
+        from stillmapped.vercmp import compare_deb
+        self.assertEqual(compare_deb("1.0~rc1", "1.0"), -1)
+        self.assertEqual(compare_deb("8.3.6-0ubuntu0.24.04.13~ppa1", "8.3.6-0ubuntu0.24.04.13"), -1)
+        rec = {**RECORDS[0], "origin": r"^8\.3\.6-0ubuntu0\.24\.04\.\d+(~\w+)?$"}
+        pre = b("ubuntu", "24.04", "php8.3", "8.3.6-0ubuntu0.24.04.13~rc1", "vercmp-deb")
+        self.assertEqual(resolve_one(pre, CVE, [rec])["status"], "not-fixed")
+
+    def test_exact_stream_and_branch_beat_wildcards(self):
+        # M4: with the preference inverted, a wildcard record overruled the exact one.
+        exact = {**RECORDS[5], "status": "not-fixed"}
+        exact.pop("fixed"), exact.pop("match"), exact.pop("origin")
+        wild = {**RECORDS[5], "stream": "*"}
+        build = b("rhel", "9", "php", "8.2.40-1.module+el9.8.0+25200+b2c3d4e5", "vercmp-rpm")
+        self.assertEqual(resolve_one(build, CVE, [wild, exact])["status"], "not-fixed")
+        self.assertEqual(resolve_one(build, CVE, [wild])["status"], "fixed")
+        anybranch = {**wild, "stream": "9", "branch": "*", "status": "not-fixed"}
+        anybranch.pop("fixed"), anybranch.pop("match"), anybranch.pop("origin")
+        self.assertEqual(resolve_one(build, CVE, [anybranch, RECORDS[5]])["status"], "fixed")
+        self.assertEqual(resolve_one(build, CVE, [anybranch])["status"], "not-fixed")
+
+    def test_a_misspelled_status_is_a_problem(self):
+        # M5: without the check, a record with status "fixd" resolved like a fixed one.
+        self.assertIn("bad status 'fixd'", validate_record({**RECORDS[0], "status": "fixd"}))
+        self.assertIn("bad status 'FIXED'", validate_record({**RECORDS[0], "status": "FIXED"}))
+
+    def test_epoch_must_be_ascii_digits(self):
+        # M7: without isascii(), an Arabic-Indic digit epoch parsed as 1 and compared newer.
+        from stillmapped.vercmp import compare_deb, compare_rpm, split_evr
+        for bad in ("\u0661:8.2.35-1~deb12u1", "\uff11:8.2.35-1~deb12u1"):
+            with self.subTest(bad=bad):
+                self.assertRaises(ValueError, split_evr, bad)
+                self.assertRaises(ValueError, compare_deb, bad, "8.2.35-1~deb12u1")
+                self.assertRaises(ValueError, compare_rpm, bad, "8.2.35-1")
+
+    def test_rhel_branch_wildcard_only_for_rhel(self):
+        # Owner 2026-11-03: branch "*" is a RHEL package judged per release; any other vendor keeps branches.
+        rhel = {**RECORDS[5], "branch": "*", "fixed": "1:3.2.2-6.el9_5.1", "origin": r"^1:\d+\.\d+\.\d+-\d+\.el9(_\d+)?(\.\d+)*$"}
+        self.assertEqual(validate_record(rhel), [])
+        self.assertIn("fixed version 8.3.6-0ubuntu0.24.04.13 is not on branch *", validate_record({**RECORDS[0], "branch": "*"}))
+
+
 class TestBundledData(unittest.TestCase):
     def test_every_record_valid(self):
         records = load_records()

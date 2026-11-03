@@ -42,7 +42,7 @@ def validate_record(r):
             problems.append(f"bad match {r.get('match')!r}")
         if not fixed:
             problems.append("fixed record without a fixed version")
-        elif branch(fixed) != r.get("branch"):
+        elif branch(fixed) != r.get("branch") and (r.get("branch"), r.get("vendor")) != ("*", "rhel"):
             problems.append(f"fixed version {fixed} is not on branch {r.get('branch')}")
         elif fixed.endswith("-"):  # an empty release: rpm orders 1 before 1- (fuzz F8)
             problems.append(f"fixed version {fixed} has an empty release")
@@ -104,11 +104,12 @@ def load_records(cves=None):
 
 def _candidates(build, cve, records):
     hits = [r for r in records
-            if (r["cve"], r["vendor"], r["package"], r["branch"])
-            == (cve, build["vendor"], build["package"], build["branch"])
-            and r["stream"] in (build["stream"], "*")]
-    # An exact stream record beats a wildcard one.
-    return [r for r in hits if r["stream"] != "*"] or hits
+            if (r["cve"], r["vendor"], r["package"]) == (cve, build["vendor"], build["package"])
+            and r["branch"] in (build["branch"], "*") and r["stream"] in (build["stream"], "*")]
+    # An exact stream record beats a wildcard one, then an exact branch beats "*" (a RHEL
+    # package judged per release across rebases, owner 2026-11-03).
+    hits = [r for r in hits if r["stream"] != "*"] or hits
+    return [r for r in hits if r["branch"] != "*"] or hits
 
 
 def trust(build):

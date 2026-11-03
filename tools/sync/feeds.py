@@ -8,6 +8,7 @@ PHP only, so it can never pin an OpenSSL branch."""
 import functools
 import html
 import json
+import lzma
 import re
 
 from stillmapped.vercmp import branch, compare
@@ -22,12 +23,19 @@ DEB_LIBCRYPTO = {
     "12": ("libssl3", "https://packages.debian.org/bookworm/amd64/libssl3/filelist", "2026-10-30"),
     "13": ("libssl3t64", "https://packages.debian.org/trixie/amd64/libssl3t64/filelist", "2026-10-30"),
 }
+# Release days (debian.org/News/2023/20230610, /2025/20250809, checked 2026-11-03): the
+# archive's Sources of the next day give each release's own first builds.
+DEB_RELEASE = {"12": "20230611T000000Z", "13": "20250810T000000Z"}
 UBUNTU = {"22.04": "Ubuntu:22.04:LTS", "24.04": "Ubuntu:24.04:LTS", "26.04": "Ubuntu:26.04:LTS", "26.10": "Ubuntu:26.10"}
+UBU_CODENAME = {"22.04": "jammy", "24.04": "noble", "26.04": "resolute", "26.10": "stonking"}  # ubuntu.com/security/releases.json, 2026-11-03
 UBU_SRC = {"php": {"22.04": "php8.1", "24.04": "php8.3", "26.04": "php8.5", "26.10": "php8.5"},
            "openssl": dict.fromkeys(UBUNTU, "openssl")}
-UBU_LIBCRYPTO = ("libssl3", "libssl3t64")
+# The release's own libcrypto binary (packages.ubuntu.com/<codename>/<name>, 2026-11-03): a fix
+# Canonical lists in another binary (a pre-release libssl3 for noble) is not this release's build.
+UBU_LIBCRYPTO = {"22.04": "libssl3", "24.04": "libssl3t64", "26.04": "libssl3t64", "26.10": "libssl3t64"}
 RHEL_MAIN = {"Red Hat Enterprise Linux AppStream (v. 9)", "Red Hat Enterprise Linux BaseOS (v. 9)"}
 RHEL_PKG = {"php": "php", "openssl": "openssl-libs"}
+RHEL_EPOCH = {"php": "", "openssl-libs": "1:"}  # rpm -q in redhat/ubi9:9.8-1793580630, 2026-11-03
 SLES_PKG = {"php": {"php7", "php8"}, "openssl": {"libopenssl3"}}
 FILE = {"openssl": "libcrypto.so.3"}
 _DEB = functools.cmp_to_key(lambda a, b: compare("vercmp-deb", a, b))
@@ -35,17 +43,17 @@ _RH_ID = re.compile(r"^([^:]+):(.+?)-(\d+):([^-:]+)-([^:]+)\.([a-z0-9_]+)(?:::(.
 _SUSE_ID = re.compile(r"^SUSE Linux Enterprise (.+?) 15 SP(\d+)(-\w+)?:(.+)-([^-]+)-([^-]+)$")
 
 
-def highest(scheme, versions, pick=max):
-    """Owner's rule: several fix versions for one fix give the highest,
-    never the lowest. None (skip and log) when they span branches or two
-    different strings compare equal. pick=min serves Debian's pre-release case."""
+def highest(scheme, versions, span=False):
+    """Owner's rule: several fix versions for one fix give the highest, never
+    the lowest. None (skip and log) when two different strings compare equal,
+    or when they span branches, unless span (a RHEL package across rebases)."""
     vs = sorted(set(versions))
     try:
-        top = pick(vs, key=functools.cmp_to_key(lambda a, b: compare(scheme, a, b)))
+        top = max(vs, key=functools.cmp_to_key(lambda a, b: compare(scheme, a, b)))
         ties = [v for v in vs if compare(scheme, v, top) == 0]
     except (ValueError, IndexError):
         return None
-    return top if len({branch(v) for v in vs}) == 1 and ties == [top] else None
+    return top if (span or len({branch(v) for v in vs}) == 1) and ties == [top] else None
 
 
 def text(s):
@@ -82,49 +90,63 @@ def debian(snap, cve, module, out, eol):
             continue  # the package is not in this release
         pkg = DEB_LIBCRYPTO[stream][0] if module == "openssl" else src
         rec = {"vendor": "debian", "stream": stream, "package": pkg, "evidence_url": url}
-        f, urgency, adv = fixed.get((src, suite)) or fixed.get((src, "(unstable)")) or (None, "", "")
-        if f is None:
-            out.skip(cve, "debian", stream, pkg, f"no fixed version for {suite}")
-        elif f == "(not affected)":  # owner, 2026-11-02: a record, for the release's own builds of its one branch
-            vs, o = {v for v, _ in rows}, {origin.build(origin.debian(stream), v) for v, _ in rows}
-            if {s for _, s in rows} != {"fixed"} or len({branch(v) for v in vs}) != 1 or len(o) != 1 or None in o:
-                out.skip(cve, "debian", stream, pkg, f"not affected, but {suite} ships {sorted(vs)}: not one branch in the {suite} format")
+        f, _, adv = fixed.get((src, suite)) or fixed.get((src, "(unstable)")) or (None, "", "")
+        states, vs = {s for _, s in rows}, sorted({v for v, _ in rows}, key=_DEB)
+        if f == "(not affected)":  # owner, 2026-11-02: a record, for the release's own builds of its one branch
+            o = {origin.build(origin.debian(stream, True), v) for v in vs}
+            if states != {"fixed"} or len({branch(v) for v in vs}) != 1 or len(o) != 1 or None in o:
+                out.skip(cve, "debian", stream, pkg, f"not affected, but {suite} ships {vs}: not one branch in the {suite} format")
             else:
-                out.add(cve, module, {**rec, "branch": branch(vs.pop()), "status": "not-affected", "origin": o.pop(), "evidence": f"{src} {suite}: not affected"})
-        elif f == "(unfixed)":
-            states, branches = {s for _, s in rows}, {branch(v) for v, _ in rows}
-            if urgency or states != {"vulnerable"} or len(branches) != 1:
-                out.skip(cve, "debian", stream, pkg, f"unfixed, not plainly vulnerable: {urgency or sorted(states)}")
+                out.add(cve, module, {**rec, "branch": branch(vs[0]), "status": "not-affected", "origin": o.pop(), "evidence": f"{src} {suite}: not affected"})
+        elif states == {"vulnerable"} and not origin.build(origin.debian(stream), f or ""):
+            # Owner, 2026-11-03: vulnerable in the release, no fixed version of its own.
+            if len({branch(v) for v in vs}) != 1:
+                out.skip(cve, "debian", stream, pkg, f"vulnerable in {suite}, but not one branch: {vs}")
             else:
-                out.add(cve, module, {**rec, "branch": branches.pop(), "status": "not-fixed",
-                                      "evidence": f"{src} {suite}: vulnerable, no fixed version"})
-        elif o := origin.build(origin.debian(stream), f, eol.get(branch(f))):
+                out.add(cve, module, {**rec, "branch": branch(vs[0]), "status": "not-fixed", "evidence": f"{src} {suite}: vulnerable, no fixed version for {suite}"})
+        elif o := f and origin.build(origin.debian(stream), f, eol.get(branch(f))):
             out.add(cve, module, {**rec, "branch": branch(f), "status": "fixed", "match": "vercmp-deb", "fixed": f,
                                   "origin": o, "evidence": f"{src} {suite} fixed {f}" + (f", {adv}" if adv else "")})
-        elif re.fullmatch(r"(\d+:)?\d+\.\d+\.\d+-\d+", f):
-            # Owner's answer 5: fixed before the release shipped, so every build
-            # of the release carries the fix. The tracker lists only today's
-            # builds; fixed is the LOWEST build ever published in the release's
-            # own ~debNuM format, same branch, newer than the fix (owner's option
-            # A, 2026-10-30), so a host on an older point release reads fixed.
-            vs = sorted((v for v, _ in rows), key=_DEB)
-            hist = [v for v in _history(snap, src) or [] if re.fullmatch(rf"(\d+:)?\d+\.\d+\.\d+-\d+~deb{stream}u\d+", v) and branch(v) == branch(f) and compare("vercmp-deb", v, f) > 0]
-            o = (low := highest("vercmp-deb", hist, min)) and origin.build(origin.debian(stream)[:1], low, eol.get(branch(low)))
-            if {s for _, s in rows} != {"fixed"} or any(compare("vercmp-deb", v, f) <= 0 for v in vs) or not o:
-                out.skip(cve, "debian", stream, pkg, f"fixed in {f} before {suite}, but {suite} ships {vs} not all fixed and newer, or snapshot.debian.org lists no clean lowest ~deb{stream}u build: {sorted(hist)}")
+        elif f and re.fullmatch(r"(\d+:)?\d+\.\d+\.\d+-\d+", f):
+            # Owner's answer 5, as changed 2026-11-03: fixed before the release shipped, so the
+            # release's own first build (the archive's Sources on release day) and every later
+            # build carry the fix. fixed is that build; the origin admits it and [~+]debNu builds.
+            r0 = list(_release_builds(snap, stream).get(src, ()))
+            if len(r0) == 1 and compare("vercmp-deb", r0[0], f) >= 0:
+                low, o, how = r0[0], origin.build(origin.debian(stream, True), r0[0], eol.get(branch(r0[0]))), f"before {suite}; {suite} released with"
+            else:  # owner, 2026-11-03: fixed in unstable after the release; option A (2026-10-30) as before, the
+                # LOWEST build published in the release's ~debNuM format, same branch, newer than the fix.
+                hist = sorted((v for v in _history(snap, src) if re.fullmatch(rf"(\d+:)?\d+\.\d+\.\d+-\d+~deb{stream}u\d+", v)
+                               and branch(v) == branch(f) and compare("vercmp-deb", v, f) > 0), key=_DEB) if len(r0) == 1 else []
+                low, how = hist and hist[0], f"after the {suite} release ({r0}); lowest {suite} build on snapshot.debian.org:"
+                o = low and origin.build(origin.debian(stream), low, eol.get(branch(low)))
+            if states != {"fixed"} or not o or any(compare("vercmp-deb", v, low) < 0 for v in vs):
+                out.skip(cve, "debian", stream, pkg, f"fixed in {f}, but {suite} ships {vs} not all fixed, or neither its release build {r0} nor a later ~deb{stream}u build is a clean fixed build")
             else:
                 out.add(cve, module, {**rec, "branch": branch(low), "status": "fixed", "match": "vercmp-deb", "fixed": low, "origin": o,
-                                      "evidence": f"{src} fixed in {f} before {suite}; lowest {suite} build on snapshot.debian.org: {low}"})
+                                      "evidence": f"{src} fixed in {f} {how} {low}"})
         else:
             out.skip(cve, "debian", stream, pkg, f"fixed version {f} is not in the {suite} format")
 
 
-def _history(snap, src):  # every version snapshot.debian.org has of a source package, or None
+def _history(snap, src):  # every version snapshot.debian.org has of a source package
     page = snap.get(f"https://snapshot.debian.org/mr/package/{src}/")  # offline, a missing page is an error
     try:
         return [r["version"] for r in json.loads(page)["result"]]
     except (TypeError, ValueError, KeyError):
-        return None
+        return []
+
+
+@functools.lru_cache(maxsize=None)
+def _release_builds(snap, stream):
+    """{source: {versions}} in the release's main Sources on release day, Extra-Source-Only left out."""
+    data = snap.get(f"https://snapshot.debian.org/archive/debian/{DEB_RELEASE[stream]}/dists/{DEBIAN[stream]}/main/source/Sources.xz")
+    out = {}
+    for p in lzma.decompress(data).decode("utf-8", "replace").split("\n\n") if data else []:
+        f = dict(line.split(": ", 1) for line in p.splitlines() if ": " in line and not line[0].isspace())
+        if "Extra-Source-Only" not in f and f.get("Package") in {s[stream] for s in DEB_SRC.values()}:
+            out.setdefault(f["Package"], set()).add(f.get("Version"))
+    return out
 
 
 def ubuntu_index(snap, module):
@@ -170,7 +192,7 @@ def ubuntu(snap, index, cve, module, out):
         f, pkg = fx[0], src
         if module == "openssl":
             bins = {b.get("binary_name"): b.get("binary_version") for b in es[0].get("ecosystem_specific", {}).get("binaries", [])}
-            names = [n for n in UBU_LIBCRYPTO if n in bins]
+            names = [n for n in (UBU_LIBCRYPTO[stream],) if n in bins]
             if len(names) != 1 or bins[names[0]] != f:
                 out.skip(cve, "ubuntu", stream, src, f"no single libcrypto binary at {f}: {names}")
                 continue
@@ -186,6 +208,10 @@ def ubuntu(snap, index, cve, module, out):
         top = highest("vercmp-deb", [f] + [x for fx in usns.values() for x in fx])
         carry = sorted((u for u, fx in usns.items() if fx == [top]), key=lambda u: tuple(int(x) for x in re.findall(r"\d+", u)))
         o = top and origin.ubuntu(top)
+        if not carry and o and top == f:  # owner, 2026-11-03: no USN carries it; Canonical's CVE record must agree
+            st = [s for p in json.loads(snap.get(f"https://ubuntu.com/security/cves/{cve}.json") or b"{}").get("packages", [])
+                  if p.get("name") == src for s in p.get("statuses", []) if s.get("release_codename") == UBU_CODENAME[stream]]
+            carry = [None] if [(s.get("status"), s.get("description")) for s in st] == [("released", top)] else []
         if not carry or not o:
             why = f"{top} is not in Ubuntu's format" if carry else f"no USN carries the highest fix ({top})"
             out.skip(cve, "ubuntu", stream, pkg, f"{why}; CVE record {f}, USNs {usns}" if top else f"fix versions do not compare cleanly: {f}, {usns}")
@@ -195,8 +221,8 @@ def ubuntu(snap, index, cve, module, out):
             continue
         out.add(cve, module, {"vendor": "ubuntu", "stream": stream, "package": pkg, "branch": branch(top), "status": "fixed",
                               "match": "vercmp-deb", "fixed": top, "origin": o,
-                              "evidence_url": f"https://ubuntu.com/security/notices/{carry[0]}",
-                              "evidence": f"{carry[0]}: {src} {top} ({eco}); CVE record {f}"})
+                              "evidence_url": f"https://ubuntu.com/security/notices/{carry[0]}" if carry[0] else f"https://ubuntu.com/security/{cve}",
+                              "evidence": f"{carry[0] or 'no USN; Canonical CVE record'}: {src} {top} ({eco}); CVE record {f}"})
 
 
 def _vuln(snap, url):
@@ -220,31 +246,37 @@ def rhel(snap, cve, module, out, eol):
             main.add(n["product"]["product_id"])
     # Owner, 2026-11-02: "not affected" gives a record only where Red Hat names the branch (a php:X.Y module stream);
     # so does "affected" (review 8 F2), else the default run would skip a CVE Red Hat states is open.
-    ps = v.get("product_status", {})
+    ps, cve_page = v.get("product_status", {}), f"https://access.redhat.com/security/cve/{cve}"
+    rec = {"vendor": "rhel", "stream": "9", "package": pkg, "evidence_url": cve_page}
     for st, key in (("not-affected", "known_not_affected"), ("not-fixed", "known_affected")):
         for br in sorted({m[1] for p in ps.get(key, []) if (m := re.fullmatch(rf"red_hat_enterprise_linux_9:{pkg}::php:(\d+\.\d+)", p))}):
-            out.add(cve, module, {"vendor": "rhel", "stream": "9", "package": pkg, "branch": br, "status": st, "evidence_url": f"https://access.redhat.com/security/cve/{cve}",
-                                  "evidence": f"Red Hat VEX: {pkg} module stream php:{br} {key}", **({"origin": origin.fill(origin.RHEL[1], br)} if st == "not-affected" else {})})
+            out.add(cve, module, {**rec, "branch": br, "status": st, "evidence": f"Red Hat VEX: {pkg} module stream php:{br} {key}",
+                                  **({"origin": origin.fill(origin.RHEL[1], br)} if st == "not-affected" else {})})
+        # Owner, 2026-11-03: a plain package is judged per RHEL release (branch "*"), as Red Hat compares
+        # one NEVRA line across rebases. "affected" only where no module stream shares the package name.
+        if f"red_hat_enterprise_linux_9:{pkg}" in ps.get(key, []) and (st == "not-affected" or module == "openssl"):
+            out.add(cve, module, {**rec, "branch": "*", "status": st, "evidence": f"Red Hat VEX: {pkg} {key}",
+                                  **({"origin": origin.RHEL_ANY.replace("<E>", RHEL_EPOCH[pkg])} if st == "not-affected" else {})})
     groups = {}  # module stream (None for a plain package) -> {version: [product ids]}
-    for pid in v.get("product_status", {}).get("fixed", []):
+    for pid in ps.get("fixed", []):
         m = _RH_ID.match(pid)
         if m and m[1] in main and m[2] == pkg:
             ver = f"{m[4]}-{m[5]}" if m[3] == "0" else f"{m[3]}:{m[4]}-{m[5]}"  # rpm shows epoch 0 as (none)
             groups.setdefault(m[7], {}).setdefault(ver, []).append(pid)
-    if not groups:
-        return out.skip(cve, "rhel", "9", pkg, "affected, no fix (branch not stated)" if f"red_hat_enterprise_linux_9:{pkg}" in ps.get("known_affected", []) else
-                        "not affected, branch not stated" if f"red_hat_enterprise_linux_9:{pkg}" in ps.get("known_not_affected", []) else "no fixed build in the RHEL 9 main stream")
+    if not groups and not any(f"red_hat_enterprise_linux_9:{pkg}" in ps.get(k, []) for k in ("known_not_affected", "known_affected")):
+        out.skip(cve, "rhel", "9", pkg, "no fixed build in the RHEL 9 main stream")
+    elif not groups and module == "php" and f"red_hat_enterprise_linux_9:{pkg}" in ps.get("known_affected", []):
+        out.skip(cve, "rhel", "9", pkg, "affected, no fix: the plain php package shares its name with module streams")
     for stream_mod, vers in sorted(groups.items(), key=lambda g: str(g[0])):
-        ver = highest("vercmp-rpm", vers)  # owner's rule when architectures disagree
+        ver = highest("vercmp-rpm", vers, span=not stream_mod)  # owner's rule when architectures disagree
         ids = vers.get(ver, [])
         urls = {r.get("url") for r in v.get("remediations", []) if r.get("category") == "vendor_fix" and set(ids) & set(r.get("product_ids", []))}
-        o = ver and origin.build(origin.RHEL, ver, eol.get(branch(ver)))
+        o = ver and (origin.build(origin.RHEL, ver, eol.get(branch(ver))) if stream_mod else origin.build([origin.RHEL_ANY], ver))
         if not o or len(urls) != 1:
             out.skip(cve, "rhel", "9", pkg, f"{stream_mod or 'plain'}: no clean highest version, not in RHEL format, or not one erratum: {sorted(vers)} {sorted(urls)}")
             continue
-        out.add(cve, module, {"vendor": "rhel", "stream": "9", "package": pkg, "branch": branch(ver), "status": "fixed",
-                              "match": "vercmp-rpm", "fixed": ver, "origin": o, "evidence_url": urls.pop(),
-                              "evidence": f"{pkg}-{ver} ({stream_mod or 'no module'}), RHEL 9 main stream"})
+        out.add(cve, module, {**rec, "branch": branch(ver) if stream_mod else "*", "status": "fixed", "match": "vercmp-rpm", "fixed": ver,
+                              "origin": o, "evidence_url": urls.pop(), "evidence": f"{pkg}-{ver} ({stream_mod or 'no module'}), RHEL 9 main stream"})
 
 
 def sles(snap, cve, module, out, eol):

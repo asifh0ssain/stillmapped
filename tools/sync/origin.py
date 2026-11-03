@@ -15,18 +15,21 @@ import re
 _GROUPS = {"E": r"(\d+:)?", "M": r"(\d+)", "m": r"(\d+)", "P": r"(\d+)", "S": r"(1\d0\d00)"}
 
 
-def debian(stream):
+def debian(stream, release=False):
     # Debian uses both markers in one release: ~debNuM for point updates,
-    # +debNuM for security (CI run #3, owner 2026-11-02).
-    return [rf"^<E><M>\.<m>\.<P>-\d+[~+]deb{stream}u\d+$"]
+    # +debNuM for security (CI run #3, owner 2026-11-02). release: the release's
+    # own plain build too (fixed before the release, not affected; owner 2026-11-03).
+    return [rf"^<E><M>\.<m>\.<P>-\d+{'(' * release}[~+]deb{stream}u\d+{')?' * release}$"]
 
 
 # The second module template is for builds whose minor carries Red Hat's
 # literal ".z" (owner's approval 2026-10-30); it is tried only when the first
 # fails, so it never changes an origin built from a plain module version.
 RHEL = [r"^<E><M>\.<m>\.<P>-\d+\.module\+el9\.\d+\.\d+\+\d+\+[0-9a-f]{8}$",
-        r"^<E><M>\.<m>\.<P>-\d+\.module\+el9\.\d+\.\d+(\.z)?\+\d+\+[0-9a-f]{8}$",
-        r"^<E><M>\.<m>\.<P>-\d+\.el9(_\d+)?(\.\d+)*$"]
+        r"^<E><M>\.<m>\.<P>-\d+\.module\+el9\.\d+\.\d+(\.z)?\+\d+\+[0-9a-f]{8}$"]
+# Red Hat compares one NEVRA line per package, across rebases (owner 2026-11-03):
+# a plain (non-module) package gets one record per release, any upstream version.
+RHEL_ANY = r"^<E>\d+\.\d+\.\d+-\d+\.el9(_\d+)?(\.\d+)*$"
 SLES = [r"^<E><M>\.<m>\.<P>-<S>\.\d+(\.\d+)*$"]
 # Ubuntu does not change upstream within a release; only the last counter moves.
 _UBUNTU = re.compile(r"^((?:\d+:)?\d[0-9a-z.+~]*-[0-9a-z.]*ubuntu[0-9a-z.]*\.)\d+$")
@@ -49,7 +52,7 @@ def build(templates, version, final=None):
         if not m:
             continue
         v = dict(zip(names, m.groups()))  # placeholders come before any other group
-        pin = final is not None and final == f"{v['M']}.{v['m']}.{v['P']}"
+        pin = final is not None and "P" in v and final == f"{v['M']}.{v['m']}.{v['P']}"
         lit = {**v, "E": v["E"] or "", "P": v["P"] if pin else r"\d+"}
         return re.sub(r"<(\w)>", lambda g: lit[g[1]], t)
     return None

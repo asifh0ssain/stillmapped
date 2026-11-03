@@ -214,6 +214,14 @@ class TestStrict(unittest.TestCase):
         self.assertEqual({r["trust"] for r in json.loads(js)["results"]}, {"host-pkgdb"})
 
 
+class TestRunDir(unittest.TestCase):
+    def test_fixture_directories_go_under_one_per_run_directory(self):
+        import tempfile
+        import tests
+        self.assertEqual(tempfile.gettempdir(), tests.RUN_DIR)
+        self.assertTrue(tempfile.mkdtemp().startswith(tests.RUN_DIR + "/"))
+
+
 class TestVersion(unittest.TestCase):
     def test_pyproject_version_equals_package_version(self):
         toml = (pathlib.Path(__file__).resolve().parent.parent / "pyproject.toml").read_text()

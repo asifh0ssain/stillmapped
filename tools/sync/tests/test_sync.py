@@ -34,8 +34,10 @@ TABLE = [
       "8.1.27-1.module+el9.3.0.z.1+21063+f4ccb976", "8.1.27-1.module+el9.3.0.z+21063+f4ccb976.thirdparty1",
       "1:8.1.27-1.module+el9.3.0.z+21063+f4ccb976", "8.1.27-1.module+el9.3.0z+21063+f4ccb976",
       "8.1.27-1.module+el8.10.0.z+21063+f4ccb976"]),
-    (origin.RHEL, "1:3.0.7-28.el9_4", None, r"^1:3\.0\.\d+-\d+\.el9(_\d+)?(\.\d+)*$", "1:3.0.7-29.el9_5",
-     ["2:3.0.7-28.el9_4", "3.0.7-28.el9_4", "1:3.0.7-28.el9_4.alma", "1:3.0.7-28.el9_4+custom1"]),
+    # Owner, 2026-11-03: a plain RHEL package, any upstream version (rebases); epoch and el9 literal.
+    ([origin.RHEL_ANY], "1:3.0.7-28.el9_4", None, r"^1:\d+\.\d+\.\d+-\d+\.el9(_\d+)?(\.\d+)*$", "1:3.5.8-2.el9_8",
+     ["2:3.0.7-28.el9_4", "3.0.7-28.el9_4", "1:3.0.7-28.el9_4.alma", "1:3.0.7-28.el9_4+custom1", "1:3.5.8-2.el8_10",
+      "1:3.5.8-2.module+el9.8.0+25111+a1450321"]),
     (origin.SLES, "8.3.36-150700.3.24.1", None, r"^8\.3\.\d+-150700\.\d+(\.\d+)*$", "8.3.37-150700.3.27.1",
      ["8.3.36-150700.3.24.1.thirdparty", "1:8.3.36-150700.3.24.1", "8.3.36-lp156.12.1", "8.3.36-150600.3.24.1"]),
     (origin.SLES, "7.4.33-150400.4.81.1", "7.4.33", r"^7\.4\.33-150400\.\d+(\.\d+)*$", "7.4.33-150400.4.84.1",
@@ -147,43 +149,81 @@ class TestHighest(unittest.TestCase):
         self.assertIsNone(feeds.highest("upstream", ["8.3.12", "8.3.13RC1"]))  # does not parse
         self.assertIsNone(feeds.highest("upstream", []))
 
+def sources(*paras):  # a release-day main Sources.xz
+    import lzma
+    return lzma.compress("\n\n".join(f"Package: {p}\nVersion: {v}\n" + extra for p, v, extra in paras).encode())
+
+
 class TestDebianBeforeRelease(unittest.TestCase):
-    CVE, URL = "CVE-2023-0215", "https://security-tracker.debian.org/tracker/CVE-2023-0215"
-    HIST = "https://snapshot.debian.org/mr/package/openssl/"
-    ROW = "<tr><td>{}</td><td>{}</td><td>{}</td><td>fixed</td></tr>"
-    PAGE = ("<h2>Vulnerable and fixed packages</h2><table>" + ROW.format("openssl", "bookworm", "3.0.20-1~deb12u2")
-            + ROW.format("", "bookworm (security)", "3.0.22-1~deb12u2") + "</table>data on fixed versions<table>"
-            "<tr><td>openssl</td><td>source</td><td>(unstable)</td><td>3.0.8-1</td><td></td><td></td><td></td></tr></table>")
-    VERSIONS = ["3.0.22-1~deb12u2", "3.0.20-1~deb12u2", "3.0.14-1~deb12u2", "3.0.11-1~deb12u1", "3.0.10-1~deb12u1",
-                "3.0.9-1", "3.0.8-1", "3.0.7-1", "1.1.1w-0+deb11u1", "3.5.7-1~deb13u2", "3.0.5-1~deb12u1"]
+    # Owner, 2026-11-03: fixed before the release = the release's own first build.
+    CVE, URL = "CVE-2025-27587", "https://security-tracker.debian.org/tracker/CVE-2025-27587"
+    SRC = "https://snapshot.debian.org/archive/debian/20250810T000000Z/dists/trixie/main/source/Sources.xz"
+    ROW = "<tr><td>{}</td><td>{}</td><td>{}</td><td>{}</td></tr>"
+    FIXED = "<tr><td>openssl</td><td>source</td><td>{}</td><td>{}</td><td>{}</td><td></td><td></td></tr>"
 
-    def run_one(self, hist):
-        pages = {self.URL: self.PAGE.encode(), **({self.HIST: hist} if hist is not None else {})}
-        out = build.Out("2026-10-30")
+    def page(self, bookworm="vulnerable", trixie="fixed", unstable="3.5.0-1", urgency="unimportant"):
+        return ("<h2>Vulnerable and fixed packages</h2><table>" + self.ROW.format("openssl", "bookworm", "3.0.20-1~deb12u2", bookworm)
+                + self.ROW.format("", "bookworm (security)", "3.0.22-1~deb12u2", bookworm)
+                + self.ROW.format("", "trixie", "3.5.7-1~deb13u2", trixie) + self.ROW.format("", "trixie (security)", "3.5.7-1~deb13u3", trixie)
+                + "</table>data on fixed versions<table>" + self.FIXED.format("(unstable)", unstable, urgency) + "</table>").encode()
+
+    def run_one(self, src=None, **kw):
+        pages = {self.URL: self.page(**kw), **({self.SRC: src} if src is not None else {})}
+        out = build.Out("2026-11-03")
         feeds.debian(FakeSnap(pages), self.CVE, "openssl", out, {})
-        return out
+        return out.records.get((self.CVE, "openssl"), {}), out.skips
 
-    def test_fixed_before_release_uses_lowest_published_release_build(self):
-        # Owner's option A, real case: CVE-2023-0215 fixed in 3.0.8-1 before bookworm.
-        # A host on the older bookworm build 3.0.14-1~deb12u2 must read fixed.
-        out = self.run_one(json.dumps({"result": [{"version": v} for v in self.VERSIONS]}).encode())
-        (r,) = out.records[(self.CVE, "openssl")].values()
-        self.assertEqual(r["fixed"], "3.0.10-1~deb12u1")  # 3.0.5-1~deb12u1 is older than the fix; 3.0.9-1 is not ~deb12u
-        host = {"source": "dpkg", "vendor": "debian", "stream": "12", "package": "libssl3", "branch": "3.0",
-                "version": "3.0.14-1~deb12u2", "scheme": "vercmp-deb", "where": "libssl3", "module": "openssl", "db": "host"}
+    def test_trixie_release_build_3_5_1_1_reads_fixed_for_cve_2025_27587(self):
+        # Part 1 B1, real case: Debian fixed it in 3.5.0-1 before trixie, which released with 3.5.1-1.
         from stillmapped.resolve import resolve_one
-        self.assertEqual(resolve_one(host, self.CVE, [{**r, "cve": self.CVE, "module": "openssl"}])["status"], "fixed")
+        recs, _ = self.run_one(sources(("openssl", "3.5.0-1", "Extra-Source-Only: yes\n"), ("openssl", "3.5.1-1", ""), ("php8.4", "8.4.11-1", "")))
+        r = next(r for r in recs.values() if r["stream"] == "13")
+        self.assertEqual((r["fixed"], r["origin"]), ("3.5.1-1", r"^3\.5\.\d+-\d+([~+]deb13u\d+)?$"))
+        host = {"source": "dpkg", "vendor": "debian", "stream": "13", "package": "libssl3t64", "branch": "3.5",
+                "scheme": "vercmp-deb", "where": "libssl3t64", "module": "openssl", "db": "host"}
+        rec = {**r, "cve": self.CVE, "module": "openssl"}
+        for version, want in (("3.5.1-1", "fixed"), ("3.5.7-1~deb13u3", "fixed"), ("3.5.0-1", "not-fixed"),
+                              ("3.5.1-1+thirdparty1", "unknown"), ("1:3.5.1-1", "unknown")):
+            self.assertEqual(resolve_one({**host, "version": version}, self.CVE, [rec])["status"], want, version)
 
-    def test_no_version_list_no_record(self):
-        for hist in (None, b"not json", json.dumps({"result": [{"version": "3.0.9-1"}]}).encode()):
-            out = self.run_one(hist)
-            self.assertFalse(out.records.get((self.CVE, "openssl")))
-            self.assertTrue(any("snapshot.debian.org lists no clean lowest" in sk[4] for sk in out.skips))
+    def test_no_single_release_build_at_or_after_the_fix_no_record(self):
+        for src in (None, sources(), sources(("openssl", "3.4.9-1", "")), sources(("openssl", "3.5.1-1", ""), ("openssl", "3.5.2-1", ""))):
+            recs, skips = self.run_one(src)
+            self.assertFalse([r for r in recs.values() if r["stream"] == "13"])
+            self.assertTrue(any(sk[2] == "13" and "release build" in sk[4] for sk in skips))
+
+    def test_fix_after_the_release_uses_the_lowest_later_release_build(self):
+        # Owner 2026-11-03 (option A kept as a fallback), real case CVE-2024-2408 bookworm php8.2: fixed in
+        # unstable 8.2.18-1 after bookworm released with 8.2.5-2; lowest later bookworm build 8.2.20-1~deb12u1.
+        url = "https://security-tracker.debian.org/tracker/CVE-2024-2408"
+        page = ("<h2>Vulnerable and fixed packages</h2><table>" + self.ROW.format("php8.2", "bookworm", "8.2.35-1~deb12u1", "fixed")
+                + "</table>data on fixed versions<table><tr><td>php8.2</td><td>source</td><td>(unstable)</td><td>8.2.18-1</td><td></td><td></td><td></td></tr></table>")
+        hist = {"result": [{"version": v} for v in ("8.2.35-1~deb12u1", "8.2.20-1~deb12u1", "8.2.7-1~deb12u1", "8.2.18-1", "8.2.5-2")]}
+        snap = FakeSnap({url: page.encode(), "https://snapshot.debian.org/mr/package/php8.2/": json.dumps(hist).encode(),
+                         "https://snapshot.debian.org/archive/debian/20230611T000000Z/dists/bookworm/main/source/Sources.xz": sources(("php8.2", "8.2.5-2", ""))})
+        out = build.Out("2026-11-03")
+        feeds.debian(snap, "CVE-2024-2408", "php", out, {})
+        (r,) = out.records[("CVE-2024-2408", "php")].values()
+        self.assertEqual((r["fixed"], r["origin"]), ("8.2.20-1~deb12u1", r"^8\.2\.\d+-\d+[~+]deb12u\d+$"))
+
+    def test_vulnerable_with_no_fixed_version_for_the_release_gives_not_fixed(self):
+        # Part 1 C1, real case: bookworm ships vulnerable builds; only unstable has a fix (3.5.0-1, unimportant).
+        recs, _ = self.run_one(sources(("openssl", "3.5.1-1", "")))
+        r = next(r for r in recs.values() if r["stream"] == "12")
+        self.assertEqual((r["status"], r["branch"], r["package"], r["evidence_url"]), ("not-fixed", "3.0", "libssl3", self.URL))
+        self.assertNotIn("fixed", r)
+
+    def test_vulnerable_on_two_branches_no_record(self):
+        out = build.Out("2026-11-03")
+        page = self.page().replace(b"3.0.22-1~deb12u2", b"3.5.1-1~deb12u1")
+        feeds.debian(FakeSnap({self.URL: page, self.SRC: sources(("openssl", "3.5.1-1", ""))}), self.CVE, "openssl", out, {})
+        self.assertFalse([r for r in out.records[(self.CVE, "openssl")].values() if r["stream"] == "12"])
+        self.assertTrue(any(sk[4].startswith("vulnerable in bookworm, but not one branch") for sk in out.skips))
 
 
 class TestNotAffected(unittest.TestCase):
     # Owner, 2026-11-02: a vendor's stated "not affected" gives a record.
-    ROW = TestDebianBeforeRelease.ROW
+    ROW = "<tr><td>{}</td><td>{}</td><td>{}</td><td>fixed</td></tr>"
     URL = "https://security-tracker.debian.org/tracker/CVE-2024-0001"
 
     def deb(self, *rows):
@@ -198,12 +238,19 @@ class TestNotAffected(unittest.TestCase):
         out = self.deb(("openssl", "bookworm", "3.0.17-1~deb12u2"), ("", "bookworm (security)", "3.0.17-1~deb12u3"))
         (r,) = out.records[("CVE-2024-0001", "openssl")].values()
         self.assertEqual((r["status"], r["branch"], r["origin"], r["package"], r["evidence_url"]),
-                         ("not-affected", "3.0", r"^3\.0\.\d+-\d+[~+]deb12u\d+$", "libssl3", self.URL))
+                         ("not-affected", "3.0", r"^3\.0\.\d+-\d+([~+]deb12u\d+)?$", "libssl3", self.URL))
         self.assertNotIn("fixed", r)
+
+    def test_debian_not_affected_covers_the_releases_plain_build(self):
+        # Part 1 B2, owner 2026-11-03: trixie's release build 3.5.1-1 read unknown for not-affected records.
+        out = self.deb(("openssl", "bookworm", "3.0.9-1"), ("", "bookworm (security)", "3.0.17-1~deb12u3"))
+        (r,) = out.records[("CVE-2024-0001", "openssl")].values()
+        self.assertTrue(re.search(r["origin"], "3.0.9-1") and re.search(r["origin"], "3.0.17-1~deb12u3"))
+        self.assertFalse(re.search(r["origin"], "3.0.9-1+thirdparty1") or re.search(r["origin"], "1:3.0.9-1"))
 
     def test_debian_not_affected_on_two_branches_or_outside_the_format_gives_no_record(self):
         for rows in ([("openssl", "bookworm", "3.0.17-1~deb12u2"), ("", "bookworm (security)", "3.5.1-1~deb12u1")],
-                     [("openssl", "bookworm", "3.0.9-1")]):
+                     [("openssl", "bookworm", "3.0.9-1+thirdparty1")]):
             out = self.deb(*rows)
             self.assertFalse(out.records.get(("CVE-2024-0001", "openssl")))
             self.assertTrue(any(sk[4].startswith("not affected, but bookworm ships") for sk in out.skips))
@@ -218,13 +265,17 @@ class TestNotAffected(unittest.TestCase):
     def test_rhel_not_affected_only_where_the_module_stream_names_the_branch(self):
         out = self.rh({"known_not_affected": ["red_hat_enterprise_linux_9:php::php:8.2", "red_hat_enterprise_linux_9:php-cli::php:8.3",
                                               "red_hat_enterprise_linux_9:php", "red_hat_enterprise_linux_8:php::php:8.1"]})
-        (r,) = out.records[("CVE-2024-0001", "php")].values()
+        (r,) = [x for x in out.records[("CVE-2024-0001", "php")].values() if x["branch"] != "*"]
         self.assertEqual((r["status"], r["branch"], r["evidence_url"]),
                          ("not-affected", "8.2", "https://access.redhat.com/security/cve/CVE-2024-0001"))
         self.assertTrue(re.search(r["origin"], "8.2.35-1.module+el9.8.0+25111+a1450321"))
         self.assertFalse(re.search(r["origin"], "8.3.1-1.module+el9.8.0+25111+a1450321"))
         self.assertFalse(re.search(r["origin"], "8.2.35-1.el9.remi"))
-        self.assertIn(("CVE-2024-0001", "rhel", "9", "php", "not affected, branch not stated"), out.skips)
+        self.assertFalse(out.skips)
+        # Owner, 2026-11-03: the plain package's statement is one record for the release, its origin the plain el9 build.
+        (plain,) = [x for x in out.records[("CVE-2024-0001", "php")].values() if x["branch"] == "*"]
+        self.assertTrue(re.search(plain["origin"], "8.0.30-8.el9_8.1"))
+        self.assertFalse(re.search(plain["origin"], "8.2.35-1.module+el9.8.0+25111+a1450321"))
 
     def test_rhel_affected_module_stream_gives_a_not_fixed_record(self):
         # Review 8 F2: real case CVE-2025-1218, known_affected for php:8.2, 8.3 and 8.4, no fix.
@@ -234,11 +285,42 @@ class TestNotAffected(unittest.TestCase):
         self.assertEqual(sorted((r["branch"], r["status"]) for r in recs.values()),
                          [("8.2", "not-fixed"), ("8.3", "not-fixed"), ("8.4", "not-fixed")])
         self.assertTrue(all("origin" not in r and "fixed" not in r for r in recs.values()))
+        # the plain php statement is not applied: module streams share the package name
+        self.assertIn(("CVE-2024-0001", "rhel", "9", "php", "affected, no fix: the plain php package shares its name with module streams"), out.skips)
 
-    def test_rhel_openssl_not_affected_names_no_branch_and_gives_no_record(self):
+    def test_rhel_openssl_statements_give_one_record_for_the_release(self):
+        # Owner, 2026-11-03 (Part 1 C1, real case CVE-2024-13176, "Fix deferred"): affected, no fix gives not-fixed.
+        out = self.rh({"known_affected": ["red_hat_enterprise_linux_9:openssl-libs"]}, "openssl")
+        (r,) = out.records[("CVE-2024-0001", "openssl")].values()
+        self.assertEqual((r["status"], r["branch"], r["package"], r["evidence_url"]),
+                         ("not-fixed", "*", "openssl-libs", "https://access.redhat.com/security/cve/CVE-2024-0001"))
         out = self.rh({"known_not_affected": ["red_hat_enterprise_linux_9:openssl-libs"]}, "openssl")
-        self.assertFalse(out.records.get(("CVE-2024-0001", "openssl")))
-        self.assertIn(("CVE-2024-0001", "rhel", "9", "openssl-libs", "not affected, branch not stated"), out.skips)
+        (r,) = out.records[("CVE-2024-0001", "openssl")].values()
+        self.assertEqual((r["status"], r["branch"], r["origin"]), ("not-affected", "*", r"^1:\d+\.\d+\.\d+-\d+\.el9(_\d+)?(\.\d+)*$"))
+
+    def test_rhel_openssl_fix_compares_across_rebases(self):
+        # Part 1 B3 and C, real cases: CVE-2024-12797 fixed in 1:3.2.2-6.el9_5.1; CVE-2025-9230 in 1:3.5.1-4.el9_7.
+        from stillmapped.resolve import resolve_one
+        url = "https://security.access.redhat.com/data/csaf/v2/vex/2024/cve-2024-0001.json"
+        host = {"source": "rpm", "vendor": "rhel", "stream": "9", "package": "openssl-libs", "scheme": "vercmp-rpm",
+                "where": "openssl-libs", "module": "openssl", "db": "host"}
+        for fix, cases in (("1:3.2.2-6.el9_5.1", (("1:3.5.8-2.el9_8", "fixed"), ("1:3.2.2-6.el9_5.1", "fixed"), ("1:3.0.7-17.el9_2", "not-fixed"))),
+                           ("1:3.5.1-4.el9_7", (("1:3.5.8-2.el9_8", "fixed"), ("1:3.2.2-6.el9_5.1", "not-fixed"),
+                                                ("1:3.5.8-2.el9_8.alma", "unknown"), ("3.5.8-2.el9_8", "not-fixed")))):
+            name, ver = fix.split(":")[1].rsplit("-", 1)[0], fix.split(":")[1].rsplit("-", 1)[1]
+            pid = f"Red Hat Enterprise Linux BaseOS (v. 9):openssl-libs-1:{name}-{ver}.x86_64"
+            doc = {"product_tree": {"branches": [{"product": {"name": "Red Hat Enterprise Linux BaseOS (v. 9)", "product_id": "Red Hat Enterprise Linux BaseOS (v. 9)"}}]},
+                   "vulnerabilities": [{"product_status": {"fixed": [pid]},
+                                        "remediations": [{"category": "vendor_fix", "url": "https://access.redhat.com/errata/RHSA-2026:1", "product_ids": [pid]}]}]}
+            out = build.Out("2026-11-03")
+            feeds.rhel(FakeSnap({url: json.dumps(doc).encode()}), "CVE-2024-0001", "openssl", out, {})
+            (r,) = out.records[("CVE-2024-0001", "openssl")].values()
+            self.assertEqual((r["branch"], r["fixed"]), ("*", fix))
+            rec = {**r, "cve": "CVE-2024-0001", "module": "openssl"}
+            for version, want in cases:
+                from stillmapped.vercmp import branch
+                got = resolve_one({**host, "version": version, "branch": branch(version)}, "CVE-2024-0001", [rec])["status"]
+                self.assertEqual(got, want, (fix, version))
 
     def test_not_affected_and_fixed_for_one_build_give_no_record(self):
         out = build.Out("2026-11-02")
@@ -306,6 +388,33 @@ class TestUbuntu(unittest.TestCase):
         out = self.run_one({})
         self.assertFalse(out.records)
         self.assertTrue(any("no USN carries" in sk[4] for sk in out.skips))
+
+    def test_libcrypto_binary_must_be_the_releases_own(self):
+        # Real case CVE-2023-5363: Canonical lists noble's fix in libssl3 3.0.10-1ubuntu2.1, a pre-release
+        # binary; noble ships libssl3t64. A record for libssl3 made the CVE judged and unknown on every noble host.
+        rec = osv("UBUNTU-CVE-2023-5363", self.ECO, "openssl", "3.0.10-1ubuntu2.1",
+                  related=["USN-1-1"])
+        rec["affected"][0]["ecosystem_specific"] = {"binaries": [{"binary_name": "libssl3", "binary_version": "3.0.10-1ubuntu2.1"}]}
+        usn = osv("USN-1-1", self.ECO, "openssl", "3.0.10-1ubuntu2.1", upstream=["CVE-2023-5363"])
+        out = build.Out("2026-11-03")
+        feeds.ubuntu(FakeSnap({"https://api.osv.dev/v1/vulns/USN-1-1": json.dumps(usn).encode()}), {"24.04": [rec]}, "CVE-2023-5363", "openssl", out)
+        self.assertFalse(out.records)
+        self.assertTrue(any("no single libcrypto binary" in sk[4] for sk in out.skips))
+
+    def test_no_usn_canonical_cve_record_gives_the_fix(self):
+        # Owner, 2026-11-03 (Part 1 C1, real case CVE-2026-7258 noble 8.3.6-0ubuntu0.24.04.9): no USN carries the
+        # fix; Canonical's CVE JSON must say released at the same version, then its CVE page is the evidence.
+        for status, version, want in (("released", "8.3.6-0ubuntu0.24.04.9", True), ("released", "8.3.6-0ubuntu0.24.04.8", False),
+                                      ("needed", "", False)):
+            rec = osv(f"UBUNTU-{self.CVE}", self.ECO, "php8.3", "8.3.6-0ubuntu0.24.04.9")
+            js = {"packages": [{"name": "php8.3", "statuses": [{"release_codename": "noble", "status": status, "description": version}]}]}
+            out = build.Out("2026-11-03")
+            feeds.ubuntu(FakeSnap({f"https://ubuntu.com/security/cves/{self.CVE}.json": json.dumps(js).encode()}),
+                         {"24.04": [rec]}, self.CVE, "php", out)
+            recs = list(out.records.get((self.CVE, "php"), {}).values())
+            self.assertEqual(bool(recs), want, status + version)
+            if want:
+                self.assertEqual((recs[0]["fixed"], recs[0]["evidence_url"]), (version, f"https://ubuntu.com/security/{self.CVE}"))
 
 
 class TestUpstream(unittest.TestCase):

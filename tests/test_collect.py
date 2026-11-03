@@ -461,6 +461,14 @@ class TestWorkers(unittest.TestCase):
         self.assertEqual([(p["pid"], p["stale"]) for p in procs], [("300", True)])
         self.assertEqual(problems, [])
 
+    def test_php_whose_binary_is_not_in_its_maps_is_a_problem_not_skipped(self):
+        # Mutation M6: with the "not in maps" subject removed, such a process was skipped silently.
+        d = fake_proc(self.root, 410, "/usr/sbin/php-fpm8.3")
+        write(self.root, "proc/410/maps", "7f000000-7f001000 r-xp 00000000 00:00 0   /usr/lib/x.so\n")
+        procs, _, problems = self.workers()
+        self.assertEqual(procs, [])
+        self.assertTrue(any(p.startswith("pid 410: can't compare /usr/sbin/php-fpm8.3") and "not in maps" in p for p in problems))
+
     def test_php_cli_daemon_is_a_worker(self):
         # Review: a long-running php8.3 CLI process was not seen at all.
         fake_proc(self.root, 400, "/usr/bin/php8.3")
@@ -1439,6 +1447,35 @@ class TestMountNamespace(unittest.TestCase):
                 fake_proc(root, 200, "/usr/sbin/legacyd", maps=[LIB], proot=view, mntns="mnt:[4026532999]")
                 got, code = self.run_ns(root, view, fake_runner({}), {"libssl3": "openssl"}, OPENSSL)
                 self.assertEqual((got, code), (want, 2 if bound else 0))
+
+    def rpm_host(self, verify, present=True):
+        lib = "/usr/lib64/libcrypto.so.3.5.8"
+        rec = {**OPENSSL, "vendor": "almalinux", "stream": "9", "package": "openssl-libs", "match": "vercmp-rpm",
+               "branch": "3.5", "fixed": "1:3.5.8-2.el9_8", "origin": r"^1:3\.5\.\d+-\d+\.el9(_\d+)?$"}
+        runner = fake_runner({"rpm -qa": "openssl-libs\t1:3.5.8-2.el9_8", "rpm -V": verify,
+                              "rpm files": f"{lib}\topenssl-libs 1:3.5.8-2.el9_8\n"})
+        root = tempfile.mkdtemp()
+        write(root, "etc/os-release", 'ID=almalinux\nVERSION_ID="9.8"\n')
+        fake_proc(root, 200, "/usr/sbin/sshd", maps=[lib])
+        if not present:
+            os.remove(os.path.join(root, lib.lstrip("/")))
+        from stillmapped.resolve import exit_code, resolve
+        with patch.object(c, "_which", side_effect=lambda n: "/usr/bin/rpm" if n == "rpm" else None):
+            inv = c.collect(root, runner, libs={"openssl-libs": "openssl"}, files={"libcrypto.so.3": "openssl"})
+        r = resolve(inv, [rec], [rec["cve"]])
+        return [(x["mapping"]["pid"], x["status"]) for x in r["results"] if x.get("mapping")], r["problems"], exit_code(r)
+
+    def test_rpm_v_failure_makes_the_file_untraced(self):
+        # Mutation M1: with the rpm -V verdict ignored, a modified library file read fixed.
+        self.assertEqual(self.rpm_host("")[::2], ([("200", "fixed")], 0))
+        got, problems, code = self.rpm_host("S.5....T.    /usr/lib64/libcrypto.so.3.5.8\n")
+        self.assertEqual((got, code), ([], 2))
+        self.assertTrue(any("it fails rpm -V" in p for p in problems))
+
+    def test_mapped_library_whose_installed_file_is_gone_needs_a_restart(self):
+        # Mutation M2: "installed file is gone" read as the same code, so fixed.
+        got, _, code = self.rpm_host("", present=False)
+        self.assertEqual((got, code), ([("200", "restart-needed")], 1))
 
     def test_rpm_file_this_process_sees_must_be_the_one_checked(self):
         import shutil
