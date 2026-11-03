@@ -65,3 +65,18 @@ judged: no vendor record for ubuntu 24.04. Ubuntu's CVE tracker states "not
 affected" per release, but `tools/sync` reads Ubuntu's OSV feed, which lists
 fixes only. Fix idea: read the tracker's per-release status and emit
 `not-affected` records, as for Debian.
+
+## Fuzz findings that no input can reach
+
+One-off fuzz run, 2026-11-03. Each raises an exception the scanner does not
+catch (the CLI then exits 3, fail closed), but the input is written by the
+kernel or by Docker, not by a user or an image author. No code change.
+- F5: `from_docker`: a JSON array nested 100,000 deep in `docker image
+  inspect` output raises RecursionError. Docker prints its own fixed-depth
+  Config struct.
+- F6: `running_workers`: a non-numeric flags field in `/proc/PID/stat` raises
+  ValueError from `int()`. The kernel writes that field; the process name
+  (comm), the only part a process sets, is split off before it.
+- F7: `_slurp`: a NUL byte in the address field of a `/proc/PID/maps` line
+  raises ValueError through `map_files/<range>`. The kernel writes that field.
+

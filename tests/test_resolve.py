@@ -168,6 +168,32 @@ class TestBundledData(unittest.TestCase):
             with self.subTest(file=bad):
                 self.assertTrue(validate_record({**lib, "file": bad}))
 
+    def test_validator_wrong_field_types_are_problems_not_exceptions(self):
+        # Fuzz F3, minimal inputs: match {} raised TypeError (unhashable), fixed 1 raised
+        # TypeError in branch(); load_records then stopped with exit 3.
+        self.assertEqual(validate_record({**RECORDS[0], "match": {}}), ["match must be a string"])
+        self.assertEqual(validate_record({**RECORDS[0], "fixed": 1}), ["fixed must be a string"])
+        self.assertEqual(validate_record({**RECORDS[0], "origin": ["^x$"]}), ["origin must be a string"])
+
+    def test_validator_origin_that_fails_to_compile_is_a_problem(self):
+        # Fuzz F3: deeply nested groups raised RecursionError, which only re.error was caught for.
+        deep = "^" + "(" * 100000 + ")" * 100000 + "$"
+        self.assertIn(f"bad origin pattern {deep!r}", validate_record({**RECORDS[0], "origin": deep}))
+
+    def test_validator_checks_not_affected_like_fixed(self):
+        # Fuzz F4, minimal inputs: a not-affected record with origin "^[$", or with fixed {},
+        # passed validation and then raised in resolve_one (re.error, TypeError).
+        na = {k: v for k, v in RECORDS[0].items() if k not in ("fixed", "match")}
+        na["status"] = "not-affected"
+        self.assertEqual(validate_record(na), [])
+        self.assertIn("bad origin pattern '^[$'", validate_record({**na, "origin": "^[$"}))
+        self.assertEqual(validate_record({**na, "fixed": {}}), ["fixed must be a string"])
+
+    def test_validator_rejects_fixed_version_with_empty_release(self):
+        # Fuzz F8, minimal input: "1" vs "1-". compare_rpm calls them equal; rpm orders 1 before 1-.
+        rec = {**RECORDS[5], "fixed": "8.2.35-", "origin": r"^8\.2\.\d+-.*$"}
+        self.assertIn("fixed version 8.2.35- has an empty release", validate_record(rec))
+
     def test_validator_unknown_needs_note(self):
         bad = {k: v for k, v in RECORDS[2].items() if k != "note"}
         self.assertIn("unknown record needs a note saying why", validate_record(bad))

@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.3 (2026-11-03)
+
+- fuzz hardening: container file lists can no longer stop or stall a host
+  scan. Found by a one-off stdlib fuzz run (9 parsers, 10 minutes each).
+  - A NUL byte in a path in a dpkg `.list` file made `os.readlink` raise
+    ValueError and stopped the whole scan (exit 3). That path is now
+    untraced.
+  - Symlink resolution inside a process root (`_in_root`) rebuilt the path
+    string for every component, so one deep path in a `.list` file took
+    quadratic time (100,000 components: 14 s; a 64 MiB list: hours). It is
+    now linear: the 50,000-component case takes under 0.1 s.
+  - `validate_record` never raises: a field of the wrong type, or an origin
+    pattern that fails to compile for any reason (RecursionError too), is a
+    problem. Not-affected records get the same origin and type checks as
+    fixed records. A fixed version with an empty release (ending in `-`) is
+    rejected, because rpm orders `1` before `1-`.
+
 ## 0.1.2 (2026-11-02)
 
 - docker: one image without Env no longer hides all images, found on a real

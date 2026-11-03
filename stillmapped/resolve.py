@@ -30,43 +30,46 @@ def _is_date(s):
 
 
 def validate_record(r):
-    """Return a list of problems with one data record (empty when valid)."""
+    """Return a list of problems with one data record (empty when valid). Never
+    raises: a wrong type or a bad pattern is a problem too (fuzz F3)."""
+    if typed := [f"{k} must be a string" for k in (*_REQUIRED, "match", "fixed", "origin", "note", "file", "module")
+                 if r.get(k) is not None and not isinstance(r[k], str)]:
+        return typed  # every check below reads these fields as strings
     problems = [f"missing {k}" for k in _REQUIRED if not r.get(k)]
-    status = r.get("status")
+    status, fixed = r.get("status"), r.get("fixed")
     if status == FIXED:
         if r.get("match") not in SCHEMES:
             problems.append(f"bad match {r.get('match')!r}")
-        if not r.get("fixed"):
+        if not fixed:
             problems.append("fixed record without a fixed version")
-        elif branch(r["fixed"]) != r.get("branch"):
-            problems.append(f"fixed version {r['fixed']} is not on branch {r.get('branch')}")
+        elif branch(fixed) != r.get("branch"):
+            problems.append(f"fixed version {fixed} is not on branch {r.get('branch')}")
+        elif fixed.endswith("-"):  # an empty release: rpm orders 1 before 1- (fuzz F8)
+            problems.append(f"fixed version {fixed} has an empty release")
         # A distro fix is often backported onto an older upstream version, so a
         # rebuild with a higher version (or an epoch) would compare as newer.
         # Only the vendor's exact version format, anchored, proves the fix.
         # No "|": "^a|.*$" is anchored at both ends yet matches anything.
-        if r.get("match") != "upstream" and not re.fullmatch(r"\^[^|]*\$", str(r.get("origin", ""))):
+        if r.get("match") != "upstream" and not re.fullmatch(r"\^[^|]*\$", r.get("origin") or ""):
             problems.append("distro record needs an origin pattern anchored with ^ and $, without |")
-    elif status == NOT_AFFECTED:
-        # The vendor's statement covers its own builds only; the origin
-        # pattern is what proves a build is one.
-        if r.get("fixed") or not re.fullmatch(r"\^[^|]*\$", str(r.get("origin", ""))):
-            problems.append("not-affected record needs an origin pattern anchored with ^ and $, without |, and no fixed version")
-    elif status == UNKNOWN:
-        if not r.get("note"):
-            problems.append("unknown record needs a note saying why")
-    elif status != NOT_FIXED:
+    # The vendor's statement covers its own builds only; the origin pattern is
+    # what proves a build is one. It is checked as for a fixed record (fuzz F4).
+    elif status == NOT_AFFECTED and (fixed or not re.fullmatch(r"\^[^|]*\$", r.get("origin") or "")):
+        problems.append("not-affected record needs an origin pattern anchored with ^ and $, without |, and no fixed version")
+    elif status == UNKNOWN and not r.get("note"):
+        problems.append("unknown record needs a note saying why")
+    elif status not in (FIXED, NOT_AFFECTED, UNKNOWN, NOT_FIXED):
         problems.append(f"bad status {status!r}")
     if r.get("origin") is not None:
-        try:
-            if r.get("fixed") and not re.search(r["origin"], r["fixed"]):
-                problems.append(f"fixed version {r['fixed']} doesn't match its own origin")
-        except (re.error, TypeError):
+        try:  # compiled for every status; any failure, RecursionError too, is a problem (fuzz F3, F4)
+            if not re.search(r["origin"], fixed or "") and fixed:
+                problems.append(f"fixed version {fixed} doesn't match its own origin")
+        except Exception:
             problems.append(f"bad origin pattern {r['origin']!r}")
     # A library record names the file that carries the fix: a soname, never a path.
-    f = r.get("file")
-    if r.get("module", "php") != "php" and not (isinstance(f, str) and re.fullmatch(r"[A-Za-z0-9][\w.+-]*", f, re.A)):
+    if r.get("module", "php") != "php" and not re.fullmatch(r"[A-Za-z0-9][\w.+-]*", r.get("file") or "", re.A):
         problems.append("library record needs a file: a soname such as libcrypto.so.3")
-    if not str(r.get("evidence_url", "")).startswith("https://"):
+    if not (r.get("evidence_url") or "").startswith("https://"):
         problems.append("evidence_url must be https")
     if not _is_date(r.get("checked")):
         problems.append("checked must be a real YYYY-MM-DD date")

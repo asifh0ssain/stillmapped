@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stillmapped"
-version = "0.1.2"  # released 2026-11-02; equals stillmapped.__version__
+version = "0.1.3"  # released 2026-11-03; equals stillmapped.__version__
 description = "Is the PHP or OpenSSL code running in memory fixed? Read-only, offline, vendor-aware CVE fix resolver."
 readme = "README.md"
 requires-python = ">=3.9"

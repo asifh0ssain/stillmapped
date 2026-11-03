@@ -318,24 +318,28 @@ def _dpkg_list(root, pkg, ext="list"):
 
 def _in_root(proot, path):
     """path with each symlink resolved inside proot, as the process sees it
-    (/lib -> usr/lib on merged-/usr systems). OSError on a symlink loop."""
-    parts, done, hops = path.split("/"), "", 0
+    (/lib -> usr/lib on merged-/usr systems). OSError on a symlink loop.
+    Linear in the path's length (fuzz F2): parts are a stack and a list, and a
+    path past PATH_MAX, which readlink would refuse, is not joined to look up."""
+    parts, done, size, hops = path.split("/")[::-1], [], 0, 0
     while parts:
-        part = parts.pop(0)
+        part = parts.pop()
         if part == "..":
-            done = done.rsplit("/", 1)[0]  # never above the process root
+            size -= len(done.pop()) + 1 if done else 0  # never above the process root
         elif part not in ("", "."):
             try:
-                target = os.readlink(os.path.join(proot, f"{done}/{part}".lstrip("/")))
-            except OSError:  # not a symlink
-                done = f"{done}/{part}"
+                if size + len(part) >= 4096:
+                    raise OSError("longer than PATH_MAX")
+                target = os.readlink(os.path.join(proot, "/".join([*done, part])))
+            except (OSError, ValueError):  # not a symlink; ValueError: a NUL byte, so it stays untraced (fuzz F1)
+                done.append(part)
+                size += len(part) + 1
                 continue
-            hops += 1
-            if hops > 40:
+            if (hops := hops + 1) > 40:
                 raise OSError(f"symlink loop in {path}")
-            parts = target.split("/") + parts
-            done = "" if target.startswith("/") else done
-    return done or "/"
+            parts += target.split("/")[::-1]
+            done, size = ([], 0) if target.startswith("/") else (done, size)
+    return "/" + "/".join(done)
 
 
 def _at(root, path):  # the scanner's path to path inside root, symlinks resolved in root
@@ -391,11 +395,10 @@ def _dpkg_owner(proot, path, index):
     """Any dpkg package that lists the shared library at path, or None. index
     caches {path: package} for one root, so each file list is read once."""
     if not index:
-        index[None], dirs = None, {}
+        index[None] = None
         for pkg in (os.path.basename(f)[:-5] for f in glob.glob(os.path.join(proot, "var/lib/dpkg/info/*.list"))):
             for f in (f for f in _dpkg_list(proot, pkg) if ".so" in os.path.basename(f)):
-                d = dirs.setdefault(os.path.dirname(f), _in_root(proot, os.path.dirname(f)))
-                index[f"{d.rstrip('/')}/{os.path.basename(f)}"] = pkg
+                index[f"{_in_root(proot, os.path.dirname(f)).rstrip('/')}/{os.path.basename(f)}"] = pkg
     return index.get(path)
 
 

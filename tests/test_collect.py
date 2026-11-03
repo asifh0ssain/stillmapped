@@ -710,6 +710,32 @@ class TestLibraries(unittest.TestCase):
                 r = self.report(root)
                 self.assertEqual((self.statuses(r)[1], r["problems"]), (("fixed", "11"), []))
 
+    def test_nul_byte_in_dpkg_list_is_untraced_not_a_crash(self):
+        # Fuzz F1, minimal input: a .list line "\x00/.so". os.readlink raised ValueError
+        # (embedded null byte), which stopped the whole scan (exit 3).
+        from stillmapped.resolve import exit_code
+        root = self.host()
+        write(root, "var/lib/dpkg/info/evil.list", "\x00/.so\n\x00/libcrypto.so.3\n")
+        self.assertIsNone(c._dpkg_owner(root, "/opt/app/lib/libcrypto.so.3", {}))
+        self.assertIsNone(c._dpkg_owns(root, "evil", "/usr/lib/x86_64-linux-gnu/libcrypto.so.3"))
+        fake_proc(root, 10, "/opt/app/bin/app", maps=["/opt/app/lib/libcrypto.so.3"])
+        r = self.report(root)
+        self.assertTrue(any("pid 10 runs /opt/app/lib/libcrypto.so.3" in p for p in r["problems"]))
+        self.assertEqual(exit_code(r), 2)
+
+    def test_deep_dpkg_list_path_resolves_in_linear_time(self):
+        # Fuzz F2, minimal input: one .list line with 50,000 components (100 KB) took 3.3 s
+        # (14.3 s at 100,000): _in_root rebuilt the whole path string for each component.
+        import time
+        root = self.host()
+        deep = "/x" + "/3" * 50000 + "/libcrypto.so.3"
+        write(root, "var/lib/dpkg/info/evil.list", deep + "\n")
+        start = time.perf_counter()
+        owner = c._dpkg_owner(root, "/opt/app/lib/libcrypto.so.3", {})
+        self.assertLess(time.perf_counter() - start, 0.1)
+        self.assertIsNone(owner)
+        self.assertEqual(c._in_root(root, deep), deep)
+
     def test_symlink_loop_in_root_is_untraced(self):
         root = self.host(lst="/lib/x86_64-linux-gnu/libcrypto.so.3")
         os.symlink("lib", os.path.join(root, "lib"))
