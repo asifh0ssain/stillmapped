@@ -115,6 +115,20 @@ class TestResolveOne(unittest.TestCase):
         self.check(b("rhel", "9", "php", "8.3.15-1.module+el9.6.0+23000+bbbbbbbb", "vercmp-rpm"), "unknown")
 
 
+class TestTrust(unittest.TestCase):
+    def test_every_result_names_its_evidence(self):
+        # Codex Security finding 1: no verification feature; the evidence is named instead.
+        base = b("ubuntu", "24.04", "php8.3", "8.3.6-0ubuntu0.24.04.13", "vercmp-deb")
+        for build, want in (({**base, "source": "dpkg"}, "host-pkgdb"), ({**base, "source": "rpm"}, "host-pkgdb"),
+                            ({**base, "source": "dpkg", "db": "container"}, "container-pkgdb"),
+                            ({**base, "source": "docker"}, "image-metadata"),
+                            ({**base, "source": "directadmin"}, "root-owned-source"),
+                            ({**base, "source": "source"}, "root-owned-source")):
+            with self.subTest(source=build["source"], db=build["db"]):
+                self.assertEqual(resolve_one(build, CVE, RECORDS)["trust"], want)
+                self.assertEqual(resolve_one(build, "CVE-NONE", RECORDS)["trust"], want)  # unknown too
+
+
 class TestBundledData(unittest.TestCase):
     def test_every_record_valid(self):
         records = load_records()

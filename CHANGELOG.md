@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.1.4 (2026-11-03)
+
+Fixes from an independent review with OpenAI Codex Security (four findings,
+triaged by the maintainer). The scanner budget is raised to 850 logic lines.
+
+- Every result carries a `trust` field naming its evidence: `host-pkgdb`,
+  `container-pkgdb`, `image-metadata` or `root-owned-source`, in `--json` and
+  in the text receipt. README and THREAT_MODEL state that stillmapped trusts
+  root-installed package databases and official-image metadata like other
+  scanners, and does not verify package authenticity (finding 1: no
+  verification feature).
+- `--strict`: a CVE not judged for a build (no vendor record for its release)
+  makes the result not fully checked (exit 2). The default is unchanged. The
+  README states exactly what exit 0 means (finding 2).
+- A process in its own mount namespace under the host's root (a bind mount)
+  is judged by the host's dpkg version only if its file and `/var/lib/dpkg/status`
+  are the ones the version was read from, as rpm already required; otherwise
+  it is untraced (exit 2). Older code with matching older dpkg metadata bound
+  over the packaged path was reported fixed (finding 3).
+- Scan-wide limits: 65,536 processes, 262,144 matching maps lines and 1,000
+  distinct problems. Past any of them, one problem and exit 2. Problems,
+  workers and mappings are no longer copied as cumulative lists (finding 4).
+- Hardening: each process root is read through its pinned `/proc/PID`
+  directory handle, and its start time is checked again at the end; a change
+  is a problem.
+
 ## 0.1.3 (2026-11-03)
 
 - fuzz hardening: container file lists can no longer stop or stall a host

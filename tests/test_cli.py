@@ -180,6 +180,40 @@ class TestReleasePush(unittest.TestCase):
         self.assertIn("[NOT AFFECTED] CVE-TEST-0002  debian/libssl3", all_out)
 
 
+class TestStrict(unittest.TestCase):
+    """Codex Security finding 2: the default run's exit 0 ignores CVEs it did not judge."""
+
+    def records(self, judged_only=False):
+        other = {**OSSL_REC, "cve": "CVE-TEST-0003", "vendor": "ubuntu", "stream": "24.04", "package": "libssl3t64",
+                 "fixed": "3.0.13-0ubuntu3.5", "origin": r"^3\.0\.13-0ubuntu3\.\d+$"}
+        return [OSSL_REC] + ([] if judged_only else [other])
+
+    def test_default_run_exit_0_with_a_not_judged_cve(self):
+        with patch.object(cli, "load_records", return_value=self.records()):
+            code, out, _ = run("--json", inv=NO_PHP)
+        report = json.loads(out)
+        self.assertEqual((code, report["not_judged"], report["problems"]), (0, {"debian 12": ["CVE-TEST-0003"]}, []))
+
+    def test_strict_makes_a_not_judged_cve_exit_2(self):
+        with patch.object(cli, "load_records", return_value=self.records()):
+            code, out, _ = run("--strict", inv=NO_PHP)
+        self.assertEqual(code, 2)
+        self.assertIn("--strict: 1 CVEs have no vendor record for a build found here and were not judged", out)
+
+    def test_strict_exit_0_when_every_cve_is_judged(self):
+        with patch.object(cli, "load_records", return_value=self.records(judged_only=True)):
+            code, _, _ = run("--strict", inv=NO_PHP)
+        self.assertEqual(code, 0)
+
+    def test_trust_in_text_receipt_and_json(self):
+        # Codex Security finding 1: every result names the evidence it rests on.
+        with patch.object(cli, "load_records", return_value=self.records(judged_only=True)):
+            _, out, _ = run("--all", inv=NO_PHP)
+            _, js, _ = run("--json", inv=NO_PHP)
+        self.assertIn("  trust:  host-pkgdb\n", out)
+        self.assertEqual({r["trust"] for r in json.loads(js)["results"]}, {"host-pkgdb"})
+
+
 class TestVersion(unittest.TestCase):
     def test_pyproject_version_equals_package_version(self):
         toml = (pathlib.Path(__file__).resolve().parent.parent / "pyproject.toml").read_text()

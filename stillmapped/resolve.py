@@ -111,8 +111,15 @@ def _candidates(build, cve, records):
     return [r for r in hits if r["stream"] != "*"] or hits
 
 
+def trust(build):
+    """The evidence a verdict rests on (Codex finding 1). Package databases and image metadata
+    are trusted as installed; stillmapped does not verify package or image authenticity."""
+    return ("container-pkgdb" if build["db"] == "container" else "host-pkgdb" if build["source"] in ("dpkg", "rpm")
+            else "image-metadata" if build["source"] == "docker" else "root-owned-source")
+
+
 def resolve_one(build, cve, records):
-    base = {"cve": cve, "build": build, "record": None}
+    base = {"cve": cve, "build": build, "record": None, "trust": trust(build)}
     hits = _candidates(build, cve, records)
     if not hits:
         return {**base, "status": UNKNOWN,

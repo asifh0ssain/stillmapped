@@ -12,6 +12,7 @@ a part of the host from being checked; it makes the overall result unknown.
 
 import glob
 import hashlib
+import itertools
 import json
 import os
 import re
@@ -23,6 +24,9 @@ from .vercmp import branch
 
 RUN_TIMEOUT = 20  # seconds, per subprocess
 MAX_READ = 64 << 20  # bytes hashed per mapped file at most
+# Scan-wide limits (Codex Security finding 4): processes, matching maps lines and
+# distinct problems. Past any of them the scan stops with one problem (exit 2).
+MAX_PROCS, MAX_LINES, MAX_PROBLEMS = 1 << 16, 1 << 18, 1000
 # Commands are looked up here only, never on the caller's PATH, so a planted
 # 'rpm' or 'docker' earlier on PATH is not run when this runs as root.
 # /usr/local/bin and /opt/homebrew/bin are user-writable on a Mac, so root
@@ -452,22 +456,28 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
     proc = os.path.join(root, "proc")
     if not os.path.isdir(proc):
         return [], [], ["no /proc: running processes not checked"], []
-    problems = [] if os.geteuid() == 0 else ["not run as root: other users' processes may be hidden"]
+    problems = dict.fromkeys([] if os.geteuid() == 0 else ["not run as root: other users' processes may be hidden"])
     host = os.stat(root)
     host = (host.st_dev, host.st_ino)
-    by_root = {host: (list(builds), [])}  # root -> (builds, problems of its package database)
-    use_rpm = any(b["source"] == "rpm" for b in builds)
-    owners, indexes, rpm_index, workers, mappings, extra, unreadable = {}, {}, {}, [], [], [], 0
     try:
         own = [os.readlink(os.path.join(proc, "self/ns", n)) for n in ("user", "mnt")]
     except OSError:
         own = [None, None]
-    for pid in sorted((p for p in os.listdir(proc) if p.isdigit()), key=int):
-        proot = os.path.join(proc, pid, "root")
+    # root -> (builds, problems of its package database, the root and mount namespace they were read from)
+    by_root = {host: (list(builds), [], root, own[1])}
+    use_rpm = any(b["source"] == "rpm" for b in builds)
+    owners, indexes, rpm_index, workers, mappings, extra, unreadable, lines = {}, {}, {}, [], [], [], 0, 0
+    limit = (f"scan limit reached (over {MAX_PROCS} processes, {MAX_LINES} matching maps lines or {MAX_PROBLEMS} "
+             "problems); processes from pid {} on were not checked")
+    for n, pid in enumerate(sorted((p for p in os.listdir(proc) if p.isdigit()), key=int)):
+        if n >= MAX_PROCS or lines > MAX_LINES or len(problems) > MAX_PROBLEMS:
+            problems[limit.format(pid)] = None
+            break
         try:
             d = os.open(os.path.join(proc, pid), os.O_RDONLY | os.O_DIRECTORY)
         except OSError:
             continue
+        proot = f"/proc/self/fd/{d}/root"  # through the pinned directory: never another process's root
         pw, pm, notes, exe, kthread = [], [], [], None, None  # committed only if still alive at the end
         try:
             fields = _read(d, "stat").rsplit(")", 1)[1].split()
@@ -475,8 +485,11 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
             exe = os.readlink("exe", dir_fd=d)
             ns = [os.readlink(f"ns/{n}", dir_fd=d) for n in ("user", "mnt")]
             with open(os.open("maps", os.O_RDONLY, dir_fd=d), encoding="utf-8", errors="replace") as fh:
-                maps = [m for m in (line.rstrip("\n").split(None, 5) for line in fh) if len(m) == 6 and m[5][:1] == "/"
-                        and (m[5] == exe or _PHP_MODULE.search(m[5]) or _lib_file(m[5], files))]  # streamed
+                maps = list(itertools.islice((m for m in (line.rstrip("\n").split(None, 5) for line in fh) if len(m) == 6
+                                              and m[5][:1] == "/" and (m[5] == exe or _PHP_MODULE.search(m[5]) or _lib_file(m[5], files))),
+                                             MAX_LINES - lines + 1))  # streamed, at most the lines left
+            if (lines := lines + len(maps)) > MAX_LINES:
+                continue  # the limit check above stops the scan
             php = _php_path(exe, maps)
             subjects = {tuple(m[3:]): m for m in maps if m[5] == php or _lib_file(m[5], files)}  # each inode
             if php and php not in (k[2] for k in subjects):
@@ -496,7 +509,8 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
                 module = "php" if mapped == php else files[_lib_file(path, files)]
                 if key not in by_root:  # rpm can't read a container's database; dpkg's is a file
                     found, issues = from_dpkg(os_release(proot), proot, libs)
-                    by_root[key] = [{**b, "db": "container"} for b in found], [f"container of pid {pid}: {p}" for p in issues]
+                    by_root[key] = ([{**b, "db": "container"} for b in found], [f"container of pid {pid}: {p}" for p in issues],
+                                    os.path.join(proc, pid, "root"), ns[1])
                 notes += by_root[key][1]
                 # Keyed by mount namespace too: a service with its own (PrivateTmp, a bind
                 # mount) can see another file at the packaged path under the same root.
@@ -505,8 +519,12 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
                     rpm_name = use_rpm and not in_container and _rpm_owner(runner, path, rpm_index)
                     b = _owner(proot, path, by_root[key][0], rpm_name, module)
                     why = b and _tampered(proot, b, path, runner) or b
-                    if why is b and b and b["source"] == "rpm" and ns[1] != own[1] and not _same_file(proot, root, path):
-                        why = "it is not the file rpm -V checked on the host"
+                    # Another mount view under the same root (a bind mount): its file, and for dpkg its status,
+                    # must be the ones the version was read from, or the version is not this code's (Codex finding 3).
+                    src = by_root[key][2]
+                    if why is b and b and b["source"] in ("rpm", "dpkg") and ns[1] != by_root[key][3] and not (
+                            _same_file(proot, src, path) and (b["source"] == "rpm" or _same_file(proot, src, "/var/lib/dpkg/status"))):
+                        why = f"it is not the file {b['source']} was read for in {'the container' if in_container else 'the host'}"
                     if b is None and module != "php":
                         other = rpm_name or _dpkg_owner(proot, path, indexes.setdefault(key, {}))
                         why = f"owned by {other}, which no record covers" if other else "bundled copy, not owned by a package"
@@ -526,7 +544,8 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
                 else:
                     pm.append({"pid": pid, "start": start, "path": mapped, "file": _lib_file(path, files),
                                "dev": line[3], "inode": line[4], "same": same, "build": b, **info})
-            _read(d, "stat")  # the pinned fd fails (ESRCH) if the process has exited
+            if _read(d, "stat").rsplit(")", 1)[1].split()[19] != start:  # ESRCH if it exited; start time re-checked
+                raise OSError("it changed during the scan")
         except PermissionError:
             unreadable += 1
             continue
@@ -541,10 +560,15 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
                                      f"and was not fully checked ({e})"]
         finally:
             os.close(d)
-        problems, workers, mappings = problems + notes, workers + pw, mappings + pm
+        problems.update(dict.fromkeys(notes))
+        workers += pw
+        mappings += pm
+    else:  # the last process can pass a limit too
+        if lines > MAX_LINES or len(problems) > MAX_PROBLEMS:
+            problems[limit.format(pid)] = None
     if unreadable:
-        problems.append(f"{unreadable} process(es) unreadable; run as root to check every process")
-    return workers, extra, list(dict.fromkeys(problems)), mappings
+        problems[f"{unreadable} process(es) unreadable; run as root to check every process"] = None
+    return workers, extra, list(problems), mappings
 
 
 def collect(root="/", runner=run, libs={}, files={}):

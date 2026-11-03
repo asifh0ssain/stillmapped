@@ -117,16 +117,32 @@ from the file that carries the fix.
     python3 -m stillmapped --cve CVE-2026-109618  # one CVE
     python3 -m stillmapped --all                  # also list fixed results
     python3 -m stillmapped --json                 # every result, always
+    python3 -m stillmapped --strict               # a CVE not judged counts as not checked
 
 The text output lists not-fixed, unknown and restart-needed results, then the
-number of fixed and of not affected results. Run as root to see every running process.
+number of fixed and of not affected results. Each result names its evidence
+(`trust:` in the text receipt, `trust` in JSON): `host-pkgdb`,
+`container-pkgdb`, `image-metadata` or `root-owned-source`. Run as root to see
+every running process.
 
 | Exit | Meaning |
 |---|---|
 | 0 | every judged CVE fixed or not affected for every build, every part of the host checked |
 | 1 | a build is not fixed, or a worker needs a restart |
-| 2 | a build is unknown, or part of the host couldn't be checked |
+| 2 | a build is unknown, or part of the host couldn't be checked; with `--strict`, also any CVE not judged |
 | 3 | error, or no bundled data for a requested CVE |
+
+Exit 0 means exactly this: every bundled CVE (or every `--cve`) that has a
+vendor record for a build's vendor and release was judged, and each such
+CVE/build pair is fixed or not affected; every running PHP and every mapped
+`libcrypto*.so*` was traced to a checked build and runs the installed code;
+and no part of the host was left unchecked (including the scan limits of
+65,536 processes, 262,144 matching maps lines and 1,000 problems). Without
+`--strict`, a CVE with no vendor record for a build's release is not judged
+and does not stop exit 0: the `[INFO]` line and the JSON `not_judged` field list
+them. With `--strict`, any not-judged CVE makes the result exit 2 (exit 1
+still wins when something is not fixed). Exit 0 says nothing about package
+authenticity: see "Trust" below.
 
 ## Guarantees
 
@@ -183,6 +199,18 @@ number of fixed and of not affected results. Run as root to see every running pr
   (exit 2): run it again.
 - Files under a container's root are read with symlinks resolved inside that
   root, never blocking on a FIFO or device and never reading past a file's size.
+
+## Trust
+
+stillmapped trusts root-installed package databases (dpkg, rpm) and
+official-image metadata (`PHP_VERSION` and `PHP_SHA256` of images built from
+the official `php` image), like other vulnerability scanners. It checks that a
+running file is the package's own copy (dpkg `md5sums`, `rpm -V`), which is
+consistency with the package database, not authenticity. It does not verify
+that a package or image came from its vendor. Use package signature checks
+(`apt` and `dnf` repository signatures, `rpm --checksig`, `debsums` against a
+trusted mirror) and image signing (for example Sigstore `cosign verify`) for
+that. Every result names the evidence it rests on in its `trust` field.
 
 ## Install
 

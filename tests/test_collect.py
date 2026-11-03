@@ -736,6 +736,87 @@ class TestLibraries(unittest.TestCase):
         self.assertIsNone(owner)
         self.assertEqual(c._in_root(root, deep), deep)
 
+    def limit_problems(self, report):
+        return [p for p in report["problems"] if p.startswith("scan limit reached")]
+
+    def test_process_limit_below_and_above(self):
+        # Codex Security finding 4: a scan-wide process limit; past it, one problem and exit 2.
+        from stillmapped.resolve import exit_code
+        root = self.host()
+        for pid in (10, 11, 12):
+            fake_proc(root, pid, "/usr/bin/openssl", maps=[LIB])
+        with patch.object(c, "MAX_PROCS", 3):
+            r = self.report(root)
+        self.assertEqual((self.limit_problems(r), exit_code(r)), ([], 0))
+        fake_proc(root, 13, "/usr/bin/openssl", maps=[LIB])
+        with patch.object(c, "MAX_PROCS", 3):
+            r = self.report(root)
+        self.assertEqual(len(self.limit_problems(r)), 1)
+        self.assertIn("from pid 13 on were not checked", self.limit_problems(r)[0])
+        self.assertEqual(exit_code(r), 2)
+
+    def test_matching_maps_line_limit_below_and_above(self):
+        from stillmapped.resolve import exit_code
+        root = self.host()
+        fake_proc(root, 10, "/usr/bin/openssl", maps=[LIB])  # 2 matching lines: exe and libcrypto
+        with patch.object(c, "MAX_LINES", 2):
+            r = self.report(root)
+        self.assertEqual((self.limit_problems(r), exit_code(r)), ([], 0))
+        fake_proc(root, 11, "/usr/bin/app", maps=[f"/opt/m/libcrypto-{i}.so" for i in range(50)])
+        with patch.object(c, "MAX_LINES", 2):
+            r = self.report(root)
+        self.assertEqual(len(self.limit_problems(r)), 1)  # the last process passed it: still reported
+        self.assertFalse(any("/opt/m/" in p for p in r["problems"]))  # its 50 mappings were not kept
+        self.assertEqual(exit_code(r), 2)
+
+    def test_problem_limit_below_and_above(self):
+        from stillmapped.resolve import exit_code
+        root = self.host()
+        for pid in (10, 11):
+            fake_proc(root, pid, "/opt/app/bin/app", maps=[f"/opt/app{pid}/libcrypto.so.3"])
+        with patch.object(c, "MAX_PROBLEMS", 2):
+            r = self.report(root)
+        self.assertEqual((len(r["problems"]), self.limit_problems(r)), (2, []))
+        fake_proc(root, 12, "/opt/app/bin/app", maps=["/opt/app12/libcrypto.so.3"])
+        with patch.object(c, "MAX_PROBLEMS", 2):
+            r = self.report(root)
+        self.assertEqual(len(self.limit_problems(r)), 1)
+        self.assertEqual(exit_code(r), 2)
+
+    def test_process_root_is_read_through_the_pinned_pid_directory(self):
+        # Hardening: a PID reused between open and read can't swap in another root.
+        import shutil
+        root = self.host()
+        write(root, LIB.lstrip("/"), INSTALLED.decode())
+        fake_proc(root, 10, "/usr/bin/openssl", maps=[LIB])
+        evil = self.host(version="3.0.14-1~deb12u1", root=tempfile.mkdtemp())
+        real_read, swapped = c._read, []
+
+        def read(d, name):  # after the scanner pinned /proc/10, a new /proc/10 points elsewhere
+            if not swapped:
+                swapped.append(1)
+                os.rename(os.path.join(root, "proc/10"), os.path.join(root, "proc/10-gone"))
+                os.makedirs(os.path.join(root, "proc/10"))
+                os.symlink(evil, os.path.join(root, "proc/10/root"))
+            return real_read(d, name)
+        with patch.object(c, "_read", read):
+            r = self.report(root)
+        self.assertEqual([(x["status"], x["build"]["db"]) for x in r["results"] if x.get("mapping")], [("fixed", "host")])
+
+    def test_start_time_change_during_the_scan_is_a_problem(self):
+        root = self.host()
+        fake_proc(root, 10, "/usr/bin/openssl", maps=[LIB])
+        real_read, calls = c._read, []
+
+        def read(d, name):
+            text = real_read(d, name)
+            calls.append(name)
+            return text.replace(" 4242 0", " 4243 0") if name == "stat" and calls.count("stat") > 1 else text
+        with patch.object(c, "_read", read):
+            r = self.report(root)
+        self.assertTrue(any("pid 10" in p and "changed during the scan" in p for p in r["problems"]))
+        self.assertEqual([x for x in r["results"] if x.get("mapping")], [])
+
     def test_symlink_loop_in_root_is_untraced(self):
         root = self.host(lst="/lib/x86_64-linux-gnu/libcrypto.so.3")
         os.symlink("lib", os.path.join(root, "lib"))
@@ -1321,7 +1402,8 @@ class TestMountNamespace(unittest.TestCase):
         real_stat, host_st = os.stat, os.stat(root)
 
         def stat(p, *a, **k):  # Linux: such a process's /proc/PID/root is the host's root dentry
-            return host_st if p == os.path.join(root, "proc/200/root") else real_stat(p, *a, **k)
+            pid200 = isinstance(p, str) and p.endswith("/root") and os.path.realpath(p) == os.path.realpath(view)
+            return host_st if pid200 else real_stat(p, *a, **k)
         with patch.object(c.os, "stat", stat):
             inv = c.collect(root, runner, libs=libs, files={"libcrypto.so.3": "openssl"})
         r = resolve(inv, [rec], [rec["cve"]])
@@ -1337,6 +1419,26 @@ class TestMountNamespace(unittest.TestCase):
         fake_proc(root, 200, "/usr/sbin/legacyd", maps=[LIB], proot=view, mntns="mnt:[4026532999]")
         got, code = self.run_ns(root, view, fake_runner({}), {"libssl3": "openssl"}, OPENSSL)
         self.assertEqual((got, code), ([("100", "fixed")], 2))
+
+    def test_dpkg_view_with_older_code_and_matching_metadata_is_not_given_host_version(self):
+        # Codex Security finding 3, its fixture: same root inode, own mount namespace; the host's
+        # dpkg says fixed 3.0.14-1~deb12u2, the process view holds older code with a matching
+        # older status and md5sums. The host version was joined to that code: "fixed".
+        import shutil
+        old = b"old libcrypto 3.0.14-1~deb12u1"
+        for bound, want in ((False, [("200", "fixed")]), (True, [])):
+            with self.subTest(bound=bound):
+                root = TestLibraries.host(None)
+                write(root, LIB.lstrip("/"), INSTALLED.decode())  # the host's fixed, packaged file
+                view = root + "-ns200"
+                shutil.copytree(root, view, symlinks=True)
+                if bound:
+                    write(view, LIB.lstrip("/"), old.decode())
+                    write(view, "var/lib/dpkg/status", dpkg_status(("libssl3", "3.0.14-1~deb12u1", OK)))
+                    write(view, "var/lib/dpkg/info/libssl3:amd64.md5sums", f"{hashlib.md5(old).hexdigest()}  {LIB.lstrip('/')}\n")
+                fake_proc(root, 200, "/usr/sbin/legacyd", maps=[LIB], proot=view, mntns="mnt:[4026532999]")
+                got, code = self.run_ns(root, view, fake_runner({}), {"libssl3": "openssl"}, OPENSSL)
+                self.assertEqual((got, code), (want, 2 if bound else 0))
 
     def test_rpm_file_this_process_sees_must_be_the_one_checked(self):
         import shutil

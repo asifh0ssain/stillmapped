@@ -25,6 +25,16 @@ through a symlink, the result is unknown. Package databases (dpkg, rpm) and
 `/proc` are root-owned by design. A version read from a path a user can write
 (a Homebrew Cellar, a user-owned install prefix) is not evidence.
 
+## Trust in package databases and image metadata
+
+stillmapped trusts root-installed package databases and official-image
+metadata like other scanners. It does not verify package or image
+authenticity: a package or image built by an attacker, installed by root,
+carries whatever version it claims. That is root acting (out of scope), and
+it is covered by package signature checks and image signing, not by this
+tool. Every result names its evidence in a `trust` field: `host-pkgdb`,
+`container-pkgdb`, `image-metadata` or `root-owned-source`.
+
 ## Inputs and how they are treated
 
 - `/proc`: written by the kernel, but process names, paths and file contents
@@ -44,4 +54,6 @@ through a symlink, the result is unknown. Package databases (dpkg, rpm) and
   copies a vendor's exact version format can't be told apart.
 - A compromised kernel.
 - Denial of service that ends in a fail-closed answer (exit 1 or 2), or a slow
-  scan: tracked in ISSUES.md, not a false pass.
+  scan: tracked in ISSUES.md, not a false pass. Scan-wide limits (65,536
+  processes, 262,144 matching maps lines, 1,000 problems) end the scan with one
+  problem (exit 2).

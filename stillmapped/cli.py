@@ -25,6 +25,7 @@ def _table(inv, report, show_all=False):
         b = r["build"]
         print(f"\n[{r['status'].upper().replace('NOT-AFFECTED', 'NOT AFFECTED')}] {r['cve']}  {_safe(b['vendor'])}/{_safe(b['package'])} {_safe(b['version'])}")
         print(f"  from:   {_safe(b['source'])}, {_safe(b['db'])} package database ({_safe(b['where'])})")
+        print(f"  trust:  {r['trust']}")
         if r.get("mapping"):
             print(f"  pid:    {r['mapping']['pid']} maps {_safe(r['mapping']['path'])}")
         print(f"  why:    {_safe(r['reason'])}")
@@ -51,6 +52,7 @@ def main(argv=None):
     ap.add_argument("--cve", action="append", help="CVE id to check (repeatable; default: all bundled)")
     ap.add_argument("--json", action="store_true", help="machine-readable output (always every result)")
     ap.add_argument("--all", action="store_true", help="also list fixed results")
+    ap.add_argument("--strict", action="store_true", help="a CVE not judged for a build (no vendor record) makes the result not fully checked (exit 2)")
     ap.add_argument("--version", action="version", version=f"stillmapped {__version__}")
     args = ap.parse_args(argv)
 
@@ -65,6 +67,9 @@ def main(argv=None):
         inv = collect(libs={r["package"]: r["module"] for r in records if r.get("file")},
                       files={r["file"]: r["module"] for r in records if r.get("file")})
         report = resolve(inv, records, cves, strict=bool(args.cve))
+        if args.strict and report["not_judged"]:  # Codex finding 2
+            n = sum(map(len, report["not_judged"].values()))
+            report["problems"].append(f"--strict: {n} CVEs have no vendor record for a build found here and were not judged")
     except Exception as e:  # report, don't traceback, on a production host
         print(f"stillmapped: error: {_safe(e)}", file=sys.stderr)
         return 3
