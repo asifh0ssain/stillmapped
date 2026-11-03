@@ -157,7 +157,8 @@ authenticity: see "Trust" below.
   reached through a symlink counts as unknown. See
   [THREAT_MODEL.md](THREAT_MODEL.md): no non-root local user may cause a false
   `fixed` or a false exit 0.
-- `not affected` needs the vendor's own statement for that release and branch,
+- `not affected` needs the vendor's own statement for that release and branch
+  (for a plain RHEL package, for that release and package),
   and a version in the vendor's own format; it counts like `fixed` for the
   exit code.
 - Without `--cve`, a CVE with no record for a build's vendor and release is not
@@ -281,17 +282,36 @@ Trust limits. These can give a wrong `fixed`:
 
 ## Status
 
-Bundled data: 161 CVEs (66 PHP, 95 OpenSSL), 1208 records (1094 fixed, 80
-not affected, 34 not fixed), one file per CVE. `tools/sync` generated it from the vendor feeds snapshot of 2026-11-02
-(`20261102T224118Z`); every record comes from one primary vendor feed.
+Bundled data: 161 CVEs (66 PHP, 95 OpenSSL), 1280 records (1123 fixed, 103
+not affected, 54 not fixed), one file per CVE. `tools/sync` generated it from the vendor feeds snapshot of 2026-11-03
+(`20261103T175904Z`); every record comes from one primary vendor feed.
 
 | Distro | Records (of which not affected, not fixed) |
 |---|---|
-| Debian 12 / 13 | 157 (41, 0) / 110 (8, 0) |
-| Ubuntu 22.04 / 24.04 / 26.04 / 26.10 | 110 / 86 / 64 / 2 |
-| RHEL 9 | 242 (31, 34) |
+| Debian 12 / 13 | 158 (41, 1) / 136 (8, 0) |
+| Ubuntu 22.04 / 24.04 / 26.04 / 26.10 | 111 / 87 / 65 / 2 |
+| RHEL 9 | 284 (54, 53) |
 | SLES 15 SP4 / SP5 / SP6 / SP7 | 16 / 26 / 45 / 130 |
 | php.net upstream | 220 |
+
+How the vendors' statements become records:
+- Debian: a fix made before the release shipped is fixed in the release's
+  own first build (the archive's Sources on release day, for example 3.5.1-1
+  for trixie), and the origin admits that plain build as well as
+  `[~+]debNuM` builds. A fix made in unstable after the release uses the
+  lowest later `~debNuM` build on snapshot.debian.org. "Vulnerable" with no
+  fixed version for the release gives a `not-fixed` record.
+- Red Hat compares one package version line across rebases, so a plain
+  (non-module) package such as `openssl-libs` has one record per RHEL release
+  (`"branch": "*"`, origin with any upstream version, epoch and `el9`
+  literal): `1:3.5.8-2.el9_8` compares against a fix in `1:3.2.2-6.el9_5.1`.
+  A record for the build's exact branch wins over `*`. "Affected" (including
+  "Fix deferred" and "Will not fix") gives `not-fixed` for `openssl-libs` and
+  for php module streams; a plain-php "affected" statement gives no record,
+  because module streams share the package name. PHP module streams keep one
+  record per stream.
+- Ubuntu: a fix no USN carries is taken from Canonical's CVE record when it
+  states the same released version; its CVE page is the evidence.
 
 OpenSSL passes CI (run #4). glibc and libxml2 come next.
 

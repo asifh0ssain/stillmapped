@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.1.5 (2026-11-03)
+
+Data fixes from the deep verification round (differential test against Trivy
+and Grype, second-source audit, mutation testing).
+
+- Bundled data regenerated from snapshot `20261103T175904Z` (manifest SHA-256
+  `aaf51644bc663fbbed8865263faf86222f573c678f7914703b1207e045621a68`):
+  161 CVEs, 1280 records (1123 fixed, 103 not affected, 54 not fixed). Against
+  0.1.4: 173 records added, 101 RHEL records re-keyed to one record per
+  release (same fix), 74 Debian records changed (24 fixed versions moved to
+  the release's own build, 49 origins also admit the release's plain build);
+  no fixed or not-affected record became not fixed, and none was lost.
+- RHEL: a plain package (`openssl-libs`) is judged per RHEL release, not per
+  upstream branch, as Red Hat compares one package version line across
+  rebases: a fully patched RHEL 9.8 host (`1:3.5.8-2.el9_8`) no longer reads
+  unknown for fixes made on the 3.0 or 3.2 branch. Scanner: a RHEL record may
+  have `"branch": "*"`, and a record for the exact branch wins over it.
+- Debian: a fix made before the release shipped is fixed in the release's own
+  first build (for example 3.5.1-1 for trixie), so trixie's release build no
+  longer reads not fixed or unknown. A fix made after the release keeps the
+  lowest later `~debNuM` build.
+- Vendor "affected, no fix" gives `not-fixed` records: Red Hat "Affected" /
+  "Fix deferred" for `openssl-libs`, and Debian "vulnerable" with no fixed
+  version for the release. Ubuntu fixes that no USN carries come from
+  Canonical's CVE record when it states the same released version. The Ubuntu
+  libcrypto binary is now the release's own (`libssl3t64` from 24.04).
+- Tests: named tests for the seven surviving mutants M1 to M7 (each now
+  killed; none showed a code defect). The test suite now keeps its fixture
+  directories in one per-run directory and removes it at exit.
+- Generator budget raised to 550 logic lines (owner, 2026-11-03).
+
 ## 0.1.4 (2026-11-03)
 
 Fixes from an independent review with OpenAI Codex Security (four findings,
