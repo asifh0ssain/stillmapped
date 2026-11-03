@@ -80,3 +80,12 @@ kernel or by Docker, not by a user or an image author. No code change.
 - F7: `_slurp`: a NUL byte in the address field of a `/proc/PID/maps` line
   raises ValueError through `map_files/<range>`. The kernel writes that field.
 
+## RHEL: an exact-branch and a "*" record for the same CVE, package and stream
+
+Owner, 2026-11-03 (v0.1.5 review). Since v0.1.5 a plain RHEL package has one
+record per release (`"branch": "*"`), and `_candidates` takes a record for the
+build's exact branch over `*`. If the data ever held both for the same CVE,
+package and stream, the exact one would silently win, even if the two
+disagree. The generator does not emit both today. Fix idea: a load-time guard
+in the validator (`load_records`) that rejects the pair, with a named test.
+
