@@ -107,3 +107,8 @@ loaded. The web server (or LiteSpeed) usually spawns and respawns them, so
 "restart the web server" is the better advice. Output text only: no verdict
 or exit code changes. Fix idea: match php-cgi and lsphp in `_advice`
 (`stillmapped/cli.py`), with a named test. Post-launch.
+
+## Ideas
+
+- Running kernel vs vendor kernel fix per CVE (needrestart only says reboot
+  needed). Validate with users first.

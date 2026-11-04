@@ -1,5 +1,8 @@
 # stillmapped
 
+stillmapped tells you, per CVE, whether the code actually running on each server has the vendor's fix, with evidence you can show someone.
+Reboots and needrestart handle restarts well; stillmapped is the proof per CVE.
+
 Is the code that runs in memory on this host fixed for CVE X? Read-only,
 offline, no dependencies. Modules: PHP, and OpenSSL (`libcrypto.so.3`).
 
@@ -153,9 +156,26 @@ cPanel restart were **read from the package scripts** (php8.2-fpm
 8.2.35-1.1.1; AlmaLinux 9's systemd 252) and **not tested on a systemd host**.
 Tested in a debian:12 container: the reload (after USR2, the master and both
 workers ran the installed 8.2.35 binary; the CLI worker still ran the deleted
-one), the `policy-rc.d` denial, and each demo case. needrestart can restart
-services after an upgrade; it is not installed by default on Debian 12, and it
-does not check CVEs.
+one), the `policy-rc.d` denial, and each demo case.
+
+**needrestart.** needrestart finds processes that still run a replaced binary
+or library, PHP processes that run an old php binary included. Its Java, Perl,
+Python and Ruby support is only about changed script files. Ubuntu 24.04 and
+later install it by default, and it restarts systemd services automatically
+after apt and unattended upgrades (Ubuntu's announcement:
+[needrestart changes in Ubuntu 24.04](https://discourse.ubuntu.com/t/needrestart-changes-in-ubuntu-24-04-service-restarts/44671)).
+Ubuntu 22.04 only lists the services in non-interactive runs. Debian 12 and 13
+do not install it by default. RHEL does not use it. needrestart does not map
+processes to CVEs and does not check whether the installed version is the
+fixed one.
+
+That leaves:
+- processes outside systemd services (PHP CLI and queue workers, cron-started
+  daemons, supervisord programs);
+- services excluded from needrestart's restarts;
+- containers;
+- Debian and RHEL hosts;
+- evidence per CVE that the code that runs is fixed.
 
 ## What it checks
 
@@ -314,8 +334,9 @@ as Vuls, Trivy or Grype. Its scope: control-panel PHP (cPanel, CloudLinux,
 Plesk, DirectAdmin), mixed sources on one host, and processes still running
 pre-upgrade code.
 
-To find processes that need a restart, use needrestart; it does not map
-processes to CVEs or check fixed versions.
+To find processes that need a restart, use needrestart: it finds processes
+that run a replaced binary or library, PHP included. It does not map processes
+to CVEs and does not check whether the installed version is the fixed one.
 
 Vulnerability briefings such as Cloudflare's Zero Wire tell you which
 vulnerabilities matter now and what to check. stillmapped answers one part of
