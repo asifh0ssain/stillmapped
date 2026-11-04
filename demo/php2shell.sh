@@ -117,7 +117,7 @@ pause
 
 step "4. stillmapped"
 x "cd / && python3 -m stillmapped $(for c in $CVES; do printf -- '--cve %s ' "$c"; done)> /tmp/sm.txt; echo \$? > /tmp/rc
-   grep -E '^[0-9]+ fixed$|^\[RESTART NEEDED\]' /tmp/sm.txt | cut -c1-110
+   grep -E '^[0-9]+ fixed$|^\[RESTART NEEDED\]|^  - pid' /tmp/sm.txt | cut -c1-110
    rc=\$(cat /tmp/rc)
    case \$rc in 0) m='fixed';; 1) m='not fixed or restart needed';; 2) m='unknown';; *) m='error';; esac
    echo \"exit code \$rc: \$m\""

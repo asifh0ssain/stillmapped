@@ -480,7 +480,8 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
         proot = f"/proc/self/fd/{d}/root"  # through the pinned directory: never another process's root
         pw, pm, notes, exe, kthread = [], [], [], None, None  # committed only if still alive at the end
         try:
-            fields = _read(d, "stat").rsplit(")", 1)[1].split()
+            stat = _read(d, "stat")  # "pid (name) state ...": the name may hold ")" too
+            fields, name = stat.rsplit(")", 1)[1].split(), stat.partition("(")[2].rpartition(")")[0]
             start, kthread = fields[19], int(fields[6]) & 0x200000  # PF_KTHREAD
             exe = os.readlink("exe", dir_fd=d)
             ns = [os.readlink(f"ns/{n}", dir_fd=d) for n in ("user", "mnt")]
@@ -540,7 +541,7 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
                 if same is None:
                     notes.append(f"pid {pid}: can't compare {mapped} with the installed file ({info['why']})")
                 elif mapped == php:
-                    pw.append({"pid": pid, "exe": php, "stale": not same, **info})
+                    pw.append({"pid": pid, "name": name, "exe": php, "stale": not same, **info})
                 else:
                     pm.append({"pid": pid, "start": start, "path": mapped, "file": _lib_file(path, files),
                                "dev": line[3], "inode": line[4], "same": same, "build": b, **info})

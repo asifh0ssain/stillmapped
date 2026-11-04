@@ -4,8 +4,8 @@ Is the code that runs in memory on this host fixed for CVE X? Read-only,
 offline, no dependencies. Modules: PHP, and OpenSSL (`libcrypto.so.3`).
 
 Package scanners answer from the package database. That is not the same
-question. A process that started before an upgrade still runs the old code,
-and a third-party rebuild can carry a higher version without the fix. `php -v`
+question. A process that started before an upgrade, and that the upgrade did
+not restart, still runs the old code, and a third-party rebuild can carry a higher version without the fix. `php -v`
 can't answer either: distros backport fixes without changing the version.
 stillmapped finds every build on the host and every running process that maps
 one, matches each against verified vendor fix records bundled with the tool,
@@ -97,6 +97,66 @@ code in memory did not. In the second, the version changed and the code did not.
 package (`4d351715…`). The fix is in `libcrypto.so.3`. A verdict must come
 from the file that carries the fix.
 
+**Short demos for a screen recording.** `demo/video.sh` shows the OpenSSL
+case above in four steps, about 40 s. `demo/php2shell.sh` does the same for
+PHP, about 15 s: Debian 12 php8.2 `8.2.34-1~deb12u1` with a PHP CLI worker
+(`php -r` with a long sleep, as a queue worker) and php-fpm running, then the
+php2shell fix `8.2.35-1~deb12u1` (CVE-2026-109618, CVE-2026-109619) installed
+with no restart. Trivy and Grype report both CVEs before the upgrade and
+neither after. stillmapped, step 4:
+
+      2 fixed
+      [RESTART NEEDED] 4 PHP process(es) still run a deleted (pre-upgrade) binary:
+        - pid 6824 php-fpm8.2, /usr/sbin/php-fpm8.2 (deleted): restart php-fpm
+        - pid 6825 php-fpm8.2, /usr/sbin/php-fpm8.2 (deleted): restart php-fpm
+        - pid 6826 php-fpm8.2, /usr/sbin/php-fpm8.2 (deleted): restart php-fpm
+        - pid 6827 php, /usr/bin/php8.2 (deleted): restart this process (or the supervisor that runs it)
+      exit code 1: not fixed or restart needed
+
+Its limit: the demo runs in a container, where the image's `policy-rc.d`
+denies the restart that php8.2-fpm's postinst asks for. On a Debian 12 host
+with systemd, php-fpm under its unit is restarted by the upgrade (see below).
+The queue worker case holds everywhere.
+
+## When does old code keep running?
+
+An upgrade replaces files on disk. A running process keeps the code it loaded
+until it is restarted. Whether the upgrade restarts it depends on the package
+and on how the process was started.
+
+- **Debian 12 php8.2-fpm restarts php-fpm on upgrade.** Its postinst runs
+  `invoke-rc.d php8.2-fpm restart`. On a systemd host that becomes
+  `systemctl restart php8.2-fpm.service` when the unit is enabled (it is after
+  install) or active, unless the unit is masked or a `policy-rc.d` denies it.
+- **A php-fpm reload replaces the workers.** `systemctl reload` sends USR2 to
+  the master, which re-executes the installed binary and starts new workers.
+- **cPanel ea-php82-php-fpm** (AlmaLinux 9): an upgrade marks
+  `ea-php82-php-fpm.service` for restart, and systemd restarts marked units at
+  the end of the transaction. How cPanel itself starts its FPM pools was not
+  checked.
+
+Old code keeps running in:
+- PHP CLI and queue workers (`php artisan queue:work`, cron-started daemons):
+  php8.2-cli's maintainer scripts restart nothing.
+- supervisord programs: no PHP package restarts them.
+- Containers: images built from Debian's `debian` image ship a `policy-rc.d`
+  that denies every service start and restart during `apt`.
+- php-fpm started outside its packaged unit (by hand, by supervisord, under
+  another unit name) or with its unit masked.
+- Any long-running process that loaded a library such as OpenSSL before it
+  was updated: Debian 12's `libssl3` restarts no service (no maintainer
+  scripts besides an ldconfig trigger).
+
+How this was established: the Debian php-fpm restart on upgrade and the
+cPanel restart were **read from the package scripts** (php8.2-fpm
+8.2.34-1~deb12u1 and 8.2.35-1~deb12u1; ea-php82-php-fpm 8.2.34-2.4.2 and
+8.2.35-1.1.1; AlmaLinux 9's systemd 252) and **not tested on a systemd host**.
+Tested in a debian:12 container: the reload (after USR2, the master and both
+workers ran the installed 8.2.35 binary; the CLI worker still ran the deleted
+one), the `policy-rc.d` denial, and each demo case. needrestart can restart
+services after an upgrade; it is not installed by default on Debian 12, and it
+does not check CVEs.
+
 ## What it checks
 
 - dpkg (Debian, Ubuntu, Sury) and rpm (RHEL family, SUSE, Remi) packages
@@ -120,7 +180,11 @@ from the file that carries the fix.
     python3 -m stillmapped --strict               # a CVE not judged counts as not checked
 
 The text output lists not-fixed, unknown and restart-needed results, then the
-number of fixed and of not affected results. Each result names its evidence
+number of fixed and of not affected results, then each PHP process still
+running a deleted (pre-upgrade) binary, with its PID, name, binary and what to
+restart: php-fpm (a php-fpm master or pool), the web server (libphp loaded),
+or the process itself or the supervisor that runs it (CLI, queue worker,
+daemon). Each result names its evidence
 (`trust:` in the text receipt, `trust` in JSON): `host-pkgdb`,
 `container-pkgdb`, `image-metadata` or `root-owned-source`. Run as root to see
 every running process.
@@ -128,7 +192,7 @@ every running process.
 | Exit | Meaning |
 |---|---|
 | 0 | every judged CVE fixed or not affected for every build, every part of the host checked |
-| 1 | a build is not fixed, or a worker needs a restart |
+| 1 | a build is not fixed, or a PHP process or a library mapping needs a restart |
 | 2 | a build is unknown, or part of the host couldn't be checked; with `--strict`, also any CVE not judged |
 | 3 | error, or no bundled data for a requested CVE |
 
@@ -247,8 +311,8 @@ stillmapped answers one question, fast, for the advisories it bundles. For
 everything else on a host, use the vendor's own tooling (`pro fix` on Ubuntu,
 `dnf updateinfo --cve`, `zypper lp --cve`, debsecan) or a general scanner such
 as Vuls, Trivy or Grype. Its scope: control-panel PHP (cPanel, CloudLinux,
-Plesk, DirectAdmin), mixed sources on one host, and workers still running a
-pre-upgrade binary.
+Plesk, DirectAdmin), mixed sources on one host, and processes still running
+pre-upgrade code.
 
 To find processes that need a restart, use needrestart; it does not map
 processes to CVEs or check fixed versions.

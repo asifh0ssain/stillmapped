@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.7 (2026-11-04)
+
+Fixes from the php2shell demo report (two observations), and docs. The
+scanner budget is raised to 870 logic lines.
+
+- Text receipt: each PHP process still running a deleted (pre-upgrade)
+  binary is listed with its PID, process name and binary, not only counted.
+  The advice follows the file the process maps: a php-fpm master or pool,
+  "restart php-fpm"; a server with libphp loaded (Apache, uWSGI), "restart the
+  web server"; anything else (CLI, queue worker, daemon), "restart this
+  process (or the supervisor that runs it)". In 0.1.6 every case read
+  "Restart php-fpm / the web server", which was wrong for a queue worker.
+  They are called "PHP processes", not "PHP workers". JSON: each
+  `stale_workers` entry gains `name` (the kernel's process name); the key is
+  unchanged. Named tests for each process type.
+- README: a section "When does old code keep running?". Debian 12's
+  php8.2-fpm restarts php-fpm on upgrade (read from its postinst, not tested
+  on a systemd host), and a php-fpm reload replaces the workers (tested). Old
+  code keeps running in CLI and queue workers, supervisord programs,
+  containers, php-fpm started outside its packaged unit, and any long-running
+  process that loaded a library such as OpenSSL before it was updated.
+- README: `demo/video.sh` and `demo/php2shell.sh` are listed, with the
+  php2shell demo's limit: on a systemd host php-fpm under its unit is
+  restarted by the upgrade; the queue worker case holds everywhere.
+  `demo/php2shell.sh` step 4 shows the new per-process lines.
+- README wording: exit 1 is "a PHP process or a library mapping needs a
+  restart"; the opening says a process the upgrade did not restart.
+
 ## 0.1.6 (2026-11-04)
 
 Fixes from the security review of 0.1.5 (two findings, both outside

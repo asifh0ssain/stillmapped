@@ -26,6 +26,50 @@ def run(*argv, inv=INV):
     return code, out.getvalue(), err.getvalue()
 
 
+class TestRestartReceipt(unittest.TestCase):
+    """Owner 2026-11-04 (php2shell report): each PHP process on old code is listed with its
+    PID, name and binary, and advice by process type, in the text receipt."""
+
+    def receipt(self, *workers):
+        ws = [{"pid": pid, "name": name, "exe": exe, "stale": True, "mapped_sha256": "aa", "installed_sha256": "bb"}
+              for pid, name, exe in workers]
+        code, out, _ = run("--cve", "CVE-2026-109618", inv={**INV, "workers": ws})
+        self.assertEqual(code, 1)
+        self.assertNotIn("worker", out)
+        return [line for line in out.splitlines() if line.startswith(("[RESTART NEEDED]", "  - pid"))]
+
+    def test_php_fpm_master_and_pool_restart_php_fpm(self):
+        self.assertEqual(self.receipt(("6825", "php-fpm8.2", "/usr/sbin/php-fpm8.2 (deleted)"),
+                                      ("6826", "php-fpm8.2", "/usr/sbin/php-fpm8.2 (deleted)"),
+                                      ("7001", "php-fpm", "/opt/cpanel/ea-php82/root/usr/sbin/php-fpm (deleted)")), [
+            "[RESTART NEEDED] 3 PHP process(es) still run a deleted (pre-upgrade) binary:",
+            "  - pid 6825 php-fpm8.2, /usr/sbin/php-fpm8.2 (deleted): restart php-fpm",
+            "  - pid 6826 php-fpm8.2, /usr/sbin/php-fpm8.2 (deleted): restart php-fpm",
+            "  - pid 7001 php-fpm, /opt/cpanel/ea-php82/root/usr/sbin/php-fpm (deleted): restart php-fpm"])
+
+    def test_server_with_libphp_restarts_the_web_server(self):
+        self.assertEqual(self.receipt(("200", "apache2", "/usr/lib/apache2/modules/libphp8.2.so (deleted)"),
+                                      ("300", "httpd-prefork", "/usr/lib64/apache2/mod_php8.so (deleted)"),
+                                      ("71", "uwsgi-core", "/usr/lib/apache2/modules/libphp8.3.so (deleted)"))[1:], [
+            "  - pid 200 apache2, /usr/lib/apache2/modules/libphp8.2.so (deleted): restart the web server",
+            "  - pid 300 httpd-prefork, /usr/lib64/apache2/mod_php8.so (deleted): restart the web server",
+            "  - pid 71 uwsgi-core, /usr/lib/apache2/modules/libphp8.3.so (deleted): restart the web server"])
+
+    def test_cli_queue_worker_or_daemon_restarts_the_process(self):
+        self.assertEqual(self.receipt(("6828", "php", "/usr/bin/php8.2 (deleted)"),
+                                      ("401", "php-cgi8.2", "/usr/bin/php-cgi8.2 (deleted)"),
+                                      ("402", "php", "/usr/bin/php8.2"))[1:], [
+            "  - pid 6828 php, /usr/bin/php8.2 (deleted): restart this process (or the supervisor that runs it)",
+            "  - pid 401 php-cgi8.2, /usr/bin/php-cgi8.2 (deleted): restart this process (or the supervisor that runs it)",
+            "  - pid 402 php, /usr/bin/php8.2: restart this process (or the supervisor that runs it)"])
+
+    def test_advice_follows_the_mapped_file_not_the_name(self):
+        # The name is the process's own choice (prctl, exec under another name); the mapped path is the kernel's.
+        lines = self.receipt(("9", "php-fpm8.2", "/usr/bin/php8.2 (deleted)"), ("10", "\x1b]0;x\x07", "/usr/sbin/php-fpm8.2 (deleted)"))
+        self.assertEqual(lines[1:], ["  - pid 9 php-fpm8.2, /usr/bin/php8.2 (deleted): restart this process (or the supervisor that runs it)",
+                                     "  - pid 10 '\\x1b]0;x\\x07', /usr/sbin/php-fpm8.2 (deleted): restart php-fpm"])
+
+
 class TestCli(unittest.TestCase):
     def test_unknown_cve_is_an_error(self):
         # Audit: an id with no bundled data used to exit 0 with no results.

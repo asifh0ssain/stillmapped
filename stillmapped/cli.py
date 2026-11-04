@@ -2,10 +2,11 @@
 
 import argparse
 import json
+import re
 import sys
 
 from . import __version__
-from .collect import collect
+from .collect import _PHP_MODULE, collect
 from .resolve import FIXED, NOT_AFFECTED, exit_code, load_records, resolve
 
 
@@ -14,6 +15,15 @@ def _safe(s):
     (terminal escape sequences) out of the terminal."""
     s = str(s)
     return s if s.isprintable() else repr(s)
+
+
+def _advice(path):
+    """What to restart for a PHP process on old code, by the file it maps (owner, 2026-11-04)."""
+    if _PHP_MODULE.search(path):
+        return "restart the web server"  # Apache, or another server with libphp loaded
+    if re.search(r"/php-fpm[\d.]*( \(deleted\))?$", path):
+        return "restart php-fpm"  # the master or a pool process
+    return "restart this process (or the supervisor that runs it)"  # CLI, queue worker, daemon
 
 
 def _table(inv, report, show_all=False):
@@ -34,8 +44,9 @@ def _table(inv, report, show_all=False):
     print(f"\n{sum(r['status'] == FIXED for r in report['results'])} fixed")
     print(f"{sum(r['status'] == NOT_AFFECTED for r in report['results'])} not affected")
     if report["stale_workers"]:
-        print(f"\n[RESTART NEEDED] {len(report['stale_workers'])} PHP worker(s) still run a "
-              "deleted (pre-upgrade) binary. Restart php-fpm / the web server.")
+        print(f"\n[RESTART NEEDED] {len(report['stale_workers'])} PHP process(es) still run a deleted (pre-upgrade) binary:")
+        for w in report["stale_workers"]:
+            print(f"  - pid {w['pid']} {_safe(w.get('name', '?'))}, {_safe(w['exe'])}: {_advice(w['exe'])}")
     if report["problems"]:
         print("\n[NOT FULLY CHECKED]")
         for p in report["problems"]:

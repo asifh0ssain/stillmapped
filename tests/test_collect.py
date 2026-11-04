@@ -372,7 +372,7 @@ class TestFilesystemSources(unittest.TestCase):
         self.assertIn("php74", problems[0])
 
 
-def fake_proc(root, pid, exe=None, maps=(), proot=None, old=b"old code", userns="user:[4026531837]", mntns=None):
+def fake_proc(root, pid, exe=None, maps=(), proot=None, old=b"old code", userns="user:[4026531837]", mntns=None, name="a) b"):
     """A /proc/PID entry; proot is the process's root filesystem (a container's).
 
     exe and each path in maps get a maps line and a map_files entry. A
@@ -389,7 +389,7 @@ def fake_proc(root, pid, exe=None, maps=(), proot=None, old=b"old code", userns=
         os.makedirs(os.path.join(root, "proc/self/ns"), exist_ok=True)
         os.symlink("user:[4026531837]", os.path.join(root, "proc/self/ns/user"))
         os.symlink("mnt:[4026531841]", os.path.join(root, "proc/self/ns/mnt"))
-    write(root, f"proc/{pid}/stat", f"{pid} (a) b) S {'0 ' * 18}4242 0\n")  # ')' in the name too
+    write(root, f"proc/{pid}/stat", f"{pid} ({name}) S {'0 ' * 18}4242 0\n")  # ')' in the name too
     lines = []
     if exe:
         os.symlink(exe, os.path.join(d, "exe"))
@@ -439,6 +439,17 @@ class TestWorkers(unittest.TestCase):
         procs, extra, problems = self.workers()
         self.assertEqual({(p["pid"], p["stale"]) for p in procs}, {("101", True), ("102", False)})
         self.assertEqual((extra, problems), ([], []))
+
+    def test_stale_process_name_comes_from_stat(self):
+        # Owner 2026-11-04 (php2shell report): the receipt names each process on old code.
+        fake_proc(self.root, 104, "/usr/sbin/php-fpm8.3 (deleted)", name="php-fpm8.3")
+        fake_proc(self.root, 105, "/usr/bin/php8.3 (deleted)")  # default name "a) b": ")" inside the name
+        fake_proc(self.root, 106, "/usr/sbin/apache2", maps=["/usr/lib/apache2/modules/libphp8.3.so (deleted)"], name="apache2")
+        procs, _, problems = self.workers()
+        self.assertEqual(sorted((p["pid"], p["name"], p["exe"]) for p in procs),
+                         [("104", "php-fpm8.3", "/usr/sbin/php-fpm8.3 (deleted)"), ("105", "a) b", "/usr/bin/php8.3 (deleted)"),
+                          ("106", "apache2", "/usr/lib/apache2/modules/libphp8.3.so (deleted)")])
+        self.assertEqual(problems, [])
 
     def test_apache_mod_php(self):
         # Audit: Apache running mod_php used to be ignored, so a stale
