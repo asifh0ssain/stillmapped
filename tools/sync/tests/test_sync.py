@@ -265,15 +265,16 @@ class TestNotAffected(unittest.TestCase):
     def test_rhel_not_affected_only_where_the_module_stream_names_the_branch(self):
         out = self.rh({"known_not_affected": ["red_hat_enterprise_linux_9:php::php:8.2", "red_hat_enterprise_linux_9:php-cli::php:8.3",
                                               "red_hat_enterprise_linux_9:php", "red_hat_enterprise_linux_8:php::php:8.1"]})
-        (r,) = [x for x in out.records[("CVE-2024-0001", "php")].values() if x["branch"] != "*"]
+        (r,) = [x for x in out.records[("CVE-2024-0001", "php")].values() if x["branch"] != "8.0"]
         self.assertEqual((r["status"], r["branch"], r["evidence_url"]),
                          ("not-affected", "8.2", "https://access.redhat.com/security/cve/CVE-2024-0001"))
         self.assertTrue(re.search(r["origin"], "8.2.35-1.module+el9.8.0+25111+a1450321"))
         self.assertFalse(re.search(r["origin"], "8.3.1-1.module+el9.8.0+25111+a1450321"))
         self.assertFalse(re.search(r["origin"], "8.2.35-1.el9.remi"))
         self.assertFalse(out.skips)
-        # Owner, 2026-11-03: the plain package's statement is one record for the release, its origin the plain el9 build.
-        (plain,) = [x for x in out.records[("CVE-2024-0001", "php")].values() if x["branch"] == "*"]
+        # Owner, 2026-11-04: the plain package's statement is one record on branch 8.0, its origin the plain el9 build.
+        (plain,) = [x for x in out.records[("CVE-2024-0001", "php")].values() if x["branch"] == "8.0"]
+        self.assertEqual(plain["status"], "not-affected")
         self.assertTrue(re.search(plain["origin"], "8.0.30-8.el9_8.1"))
         self.assertFalse(re.search(plain["origin"], "8.2.35-1.module+el9.8.0+25111+a1450321"))
 
@@ -297,6 +298,26 @@ class TestNotAffected(unittest.TestCase):
         out = self.rh({"known_not_affected": ["red_hat_enterprise_linux_9:openssl-libs"]}, "openssl")
         (r,) = out.records[("CVE-2024-0001", "openssl")].values()
         self.assertEqual((r["status"], r["branch"], r["origin"]), ("not-affected", "*", r"^1:\d+\.\d+\.\d+-\d+\.el9(_\d+)?(\.\d+)*$"))
+
+    def test_rhel_plain_php_fix_is_on_branch_8_0(self):
+        # Owner, 2026-11-04 (security review of 0.1.5, finding 1): branch "*" only for openssl-libs.
+        from stillmapped.resolve import resolve_one, validate_record
+        from stillmapped.vercmp import branch
+        url = "https://security.access.redhat.com/data/csaf/v2/vex/2024/cve-2024-0001.json"
+        pid = "Red Hat Enterprise Linux AppStream (v. 9):php-0:8.0.30-1.el9_2.x86_64"
+        doc = {"product_tree": {"branches": [{"product": {"name": "Red Hat Enterprise Linux AppStream (v. 9)", "product_id": "Red Hat Enterprise Linux AppStream (v. 9)"}}]},
+               "vulnerabilities": [{"product_status": {"fixed": [pid]},
+                                    "remediations": [{"category": "vendor_fix", "url": "https://access.redhat.com/errata/RHSA-2026:1", "product_ids": [pid]}]}]}
+        out = build.Out("2026-11-04")
+        feeds.rhel(FakeSnap({url: json.dumps(doc).encode()}), "CVE-2024-0001", "php", out, {})
+        (r,) = out.records[("CVE-2024-0001", "php")].values()
+        self.assertEqual((r["branch"], r["fixed"]), ("8.0", "8.0.30-1.el9_2"))
+        rec = {**r, "cve": "CVE-2024-0001", "module": "php"}
+        self.assertEqual(validate_record(rec), [])
+        host = {"source": "rpm", "vendor": "rhel", "stream": "9", "package": "php", "scheme": "vercmp-rpm", "where": "php", "module": "php", "db": "host"}
+        for version, want in (("8.0.30-8.el9_8.1", "fixed"), ("8.0.27-1.el9", "not-fixed"), ("8.3.19-1.el9", "unknown")):
+            got = resolve_one({**host, "version": version, "branch": branch(version)}, "CVE-2024-0001", [rec])["status"]
+            self.assertEqual(got, want, version)
 
     def test_rhel_openssl_fix_compares_across_rebases(self):
         # Part 1 B3 and C, real cases: CVE-2024-12797 fixed in 1:3.2.2-6.el9_5.1; CVE-2025-9230 in 1:3.5.1-4.el9_7.

@@ -82,10 +82,18 @@ kernel or by Docker, not by a user or an image author. No code change.
 
 ## RHEL: an exact-branch and a "*" record for the same CVE, package and stream
 
-Owner, 2026-11-03 (v0.1.5 review). Since v0.1.5 a plain RHEL package has one
-record per release (`"branch": "*"`), and `_candidates` takes a record for the
-build's exact branch over `*`. If the data ever held both for the same CVE,
-package and stream, the exact one would silently win, even if the two
-disagree. The generator does not emit both today. Fix idea: a load-time guard
-in the validator (`load_records`) that rejects the pair, with a named test.
+Owner, 2026-11-03 (v0.1.5 review); corrected 2026-11-04 (security review of
+0.1.5, finding 2). `_candidates` takes a record for the build's exact branch
+over a `"branch": "*"` record. Both for the same CVE, package and stream is
+normal, not an error: 0.1.5 held 50 such groups (plain php `*` records beside
+php:X.Y module stream records), and each record covered different builds.
+Since 0.1.6 only RHEL `openssl-libs` may use `*` (the validator rejects it for
+anything else), and the bundled data holds no such pair.
 
+The risk is only a pair that disagrees for the same build: a build on the
+exact branch that matches both records (both origin patterns, or a record
+without one) and gets a different status from each. The exact record would
+win silently, as the disagreement check in `resolve_one` never sees the `*`
+record. Fix idea: a load-time guard in `load_records` that rejects only such
+a disagreeing pair, with a named test; a pair that agrees, or whose records
+cover different builds, stays valid.

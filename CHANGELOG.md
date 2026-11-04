@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.1.6 (2026-11-04)
+
+Fixes from the security review of 0.1.5 (two findings, both outside
+THREAT_MODEL.md; neither lets a non-root user cause a false `fixed` or a false
+exit 0).
+
+- Finding 1: a `"branch": "*"` record no longer judges RHEL php. In 0.1.5 a
+  plain RHEL php record covered every branch, so a plain-format build on
+  another branch (for example `8.3.19-1.el9`) read `fixed` for CVE-2023-0567
+  by the 8.0 fix, and `not-affected` for CVE-2024-11236. Such builds now read
+  `unknown`.
+  - Scanner: the validator rejects `"branch": "*"` for anything but RHEL
+    `openssl-libs`, which Red Hat rebased within RHEL 9, for every status.
+  - Data: the 50 plain RHEL php records (35 fixed, 15 not affected) are on
+    branch `8.0` again; no other field changed. Regenerated offline from the
+    same snapshot `20261103T175904Z` (manifest SHA-256
+    `aaf51644bc663fbbed8865263faf86222f573c678f7914703b1207e045621a68`):
+    161 CVEs, 1280 records (1123 fixed, 103 not affected, 54 not fixed).
+  - Unchanged: plain RHEL php 8.0 builds, php module stream builds and every
+    RHEL `openssl-libs` build read as in 0.1.5, including across rebases.
+  - Named tests for each, in the scanner and generator suites.
+- Finding 2: the ISSUES.md entry on an exact-branch and a `*` record for one
+  RHEL CVE, package and stream is corrected. Such pairs are normal (0.1.5 held
+  50); a guard must reject only a pair that disagrees for the same build.
+- Docs: the `resolve.py` docstring, its branch comment and the README's
+  Red Hat paragraph state the `openssl-libs` exception.
+
 ## 0.1.5 (2026-11-03)
 
 Data fixes from the deep verification round (differential test against Trivy

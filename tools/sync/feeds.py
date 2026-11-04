@@ -36,6 +36,9 @@ UBU_LIBCRYPTO = {"22.04": "libssl3", "24.04": "libssl3t64", "26.04": "libssl3t64
 RHEL_MAIN = {"Red Hat Enterprise Linux AppStream (v. 9)", "Red Hat Enterprise Linux BaseOS (v. 9)"}
 RHEL_PKG = {"php": "php", "openssl": "openssl-libs"}
 RHEL_EPOCH = {"php": "", "openssl-libs": "1:"}  # rpm -q in redhat/ubi9:9.8-1793580630, 2026-11-03
+# Branch of a plain package (no module stream). Owner, 2026-11-04: "*" (one record per release) only for
+# openssl-libs, which Red Hat rebased within RHEL 9; plain php is 8.0 throughout RHEL 9.
+RHEL_PLAIN = {"php": "8.0", "openssl-libs": "*"}
 SLES_PKG = {"php": {"php7", "php8"}, "openssl": {"libopenssl3"}}
 FILE = {"openssl": "libcrypto.so.3"}
 _DEB = functools.cmp_to_key(lambda a, b: compare("vercmp-deb", a, b))
@@ -252,10 +255,10 @@ def rhel(snap, cve, module, out, eol):
         for br in sorted({m[1] for p in ps.get(key, []) if (m := re.fullmatch(rf"red_hat_enterprise_linux_9:{pkg}::php:(\d+\.\d+)", p))}):
             out.add(cve, module, {**rec, "branch": br, "status": st, "evidence": f"Red Hat VEX: {pkg} module stream php:{br} {key}",
                                   **({"origin": origin.fill(origin.RHEL[1], br)} if st == "not-affected" else {})})
-        # Owner, 2026-11-03: a plain package is judged per RHEL release (branch "*"), as Red Hat compares
-        # one NEVRA line across rebases. "affected" only where no module stream shares the package name.
+        # A plain package's statement, on its RHEL_PLAIN branch. "affected" only where no module stream
+        # shares the package name.
         if f"red_hat_enterprise_linux_9:{pkg}" in ps.get(key, []) and (st == "not-affected" or module == "openssl"):
-            out.add(cve, module, {**rec, "branch": "*", "status": st, "evidence": f"Red Hat VEX: {pkg} {key}",
+            out.add(cve, module, {**rec, "branch": RHEL_PLAIN[pkg], "status": st, "evidence": f"Red Hat VEX: {pkg} {key}",
                                   **({"origin": origin.RHEL_ANY.replace("<E>", RHEL_EPOCH[pkg])} if st == "not-affected" else {})})
     groups = {}  # module stream (None for a plain package) -> {version: [product ids]}
     for pid in ps.get("fixed", []):
@@ -275,7 +278,7 @@ def rhel(snap, cve, module, out, eol):
         if not o or len(urls) != 1:
             out.skip(cve, "rhel", "9", pkg, f"{stream_mod or 'plain'}: no clean highest version, not in RHEL format, or not one erratum: {sorted(vers)} {sorted(urls)}")
             continue
-        out.add(cve, module, {**rec, "branch": branch(ver) if stream_mod else "*", "status": "fixed", "match": "vercmp-rpm", "fixed": ver,
+        out.add(cve, module, {**rec, "branch": branch(ver) if stream_mod else RHEL_PLAIN[pkg], "status": "fixed", "match": "vercmp-rpm", "fixed": ver,
                               "origin": o, "evidence_url": urls.pop(), "evidence": f"{pkg}-{ver} ({stream_mod or 'no module'}), RHEL 9 main stream"})
 
 

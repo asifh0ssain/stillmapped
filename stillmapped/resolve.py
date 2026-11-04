@@ -3,6 +3,8 @@
 Policy: a build is only ever called "fixed" when a verified record for its
 exact vendor, stream, package and branch says so and the version comparison
 agrees, and "not affected" only when the vendor states it for that build.
+One exception to "exact branch": RHEL openssl-libs has one record per RHEL
+release (branch "*"), as Red Hat rebased it within RHEL 9.
 Anything ambiguous resolves to "unknown", never to "fixed".
 """
 
@@ -18,7 +20,9 @@ NOT_AFFECTED = "not-affected"  # owner, 2026-11-02: counts like fixed for the ex
 NAMES = {"php": "PHP", "openssl": "OpenSSL"}
 
 # 'branch' is mandatory: RHEL ships several PHP branches all named "php", and
-# without it an 8.3 build could be compared against an 8.2 fix and pass.
+# without it an 8.3 build could be compared against an 8.2 fix and pass. Only
+# RHEL openssl-libs may use "*" (owner, 2026-11-04).
+_ANY_BRANCH = ("rhel", "openssl-libs")
 _REQUIRED = ("cve", "vendor", "stream", "package", "branch", "status", "evidence_url", "checked")
 
 
@@ -42,7 +46,7 @@ def validate_record(r):
             problems.append(f"bad match {r.get('match')!r}")
         if not fixed:
             problems.append("fixed record without a fixed version")
-        elif branch(fixed) != r.get("branch") and (r.get("branch"), r.get("vendor")) != ("*", "rhel"):
+        elif branch(fixed) != r.get("branch") and r.get("branch") != "*":
             problems.append(f"fixed version {fixed} is not on branch {r.get('branch')}")
         elif fixed.endswith("-"):  # an empty release: rpm orders 1 before 1- (fuzz F8)
             problems.append(f"fixed version {fixed} has an empty release")
@@ -60,6 +64,8 @@ def validate_record(r):
         problems.append("unknown record needs a note saying why")
     elif status not in (FIXED, NOT_AFFECTED, UNKNOWN, NOT_FIXED):
         problems.append(f"bad status {status!r}")
+    if r.get("branch") == "*" and (r.get("vendor"), r.get("package")) != _ANY_BRANCH:
+        problems.append('branch "*" is only for RHEL openssl-libs')
     if r.get("origin") is not None:
         try:  # compiled for every status; any failure, RecursionError too, is a problem (fuzz F3, F4)
             if not re.search(r["origin"], fixed or "") and fixed:
@@ -106,8 +112,8 @@ def _candidates(build, cve, records):
     hits = [r for r in records
             if (r["cve"], r["vendor"], r["package"]) == (cve, build["vendor"], build["package"])
             and r["branch"] in (build["branch"], "*") and r["stream"] in (build["stream"], "*")]
-    # An exact stream record beats a wildcard one, then an exact branch beats "*" (a RHEL
-    # package judged per release across rebases, owner 2026-11-03).
+    # An exact stream record beats a wildcard one, then an exact branch beats "*" (RHEL
+    # openssl-libs judged per release across rebases, owner 2026-11-03).
     hits = [r for r in hits if r["stream"] != "*"] or hits
     return [r for r in hits if r["branch"] != "*"] or hits
 

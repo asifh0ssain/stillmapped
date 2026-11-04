@@ -307,11 +307,14 @@ How the vendors' statements become records:
   `[~+]debNuM` builds. A fix made in unstable after the release uses the
   lowest later `~debNuM` build on snapshot.debian.org. "Vulnerable" with no
   fixed version for the release gives a `not-fixed` record.
-- Red Hat compares one package version line across rebases, so a plain
-  (non-module) package such as `openssl-libs` has one record per RHEL release
-  (`"branch": "*"`, origin with any upstream version, epoch and `el9`
+- Red Hat rebased `openssl-libs` within RHEL 9 and compares one package
+  version line across rebases, so `openssl-libs` has one record per RHEL
+  release (`"branch": "*"`, origin with any upstream version, epoch and `el9`
   literal): `1:3.5.8-2.el9_8` compares against a fix in `1:3.2.2-6.el9_5.1`.
-  A record for the build's exact branch wins over `*`. "Affected" (including
+  A record for the build's exact branch wins over `*`. No other package may
+  use `*`: plain (non-module) php is 8.0 throughout RHEL 9, and its records
+  are on branch 8.0, so a plain-format build on another branch reads
+  `unknown`. "Affected" (including
   "Fix deferred" and "Will not fix") gives `not-fixed` for `openssl-libs` and
   for php module streams; a plain-php "affected" statement gives no record,
   because module streams share the package name. PHP module streams keep one

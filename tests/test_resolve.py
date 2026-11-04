@@ -1,3 +1,4 @@
+import collections
 import json
 import unittest
 from unittest.mock import MagicMock, patch
@@ -168,11 +169,61 @@ class TestMutationSurvivors(unittest.TestCase):
                 self.assertRaises(ValueError, compare_deb, bad, "8.2.35-1~deb12u1")
                 self.assertRaises(ValueError, compare_rpm, bad, "8.2.35-1")
 
-    def test_rhel_branch_wildcard_only_for_rhel(self):
-        # Owner 2026-11-03: branch "*" is a RHEL package judged per release; any other vendor keeps branches.
-        rhel = {**RECORDS[5], "branch": "*", "fixed": "1:3.2.2-6.el9_5.1", "origin": r"^1:\d+\.\d+\.\d+-\d+\.el9(_\d+)?(\.\d+)*$"}
-        self.assertEqual(validate_record(rhel), [])
-        self.assertIn("fixed version 8.3.6-0ubuntu0.24.04.13 is not on branch *", validate_record({**RECORDS[0], "branch": "*"}))
+
+
+class TestRhelBranchWildcard(unittest.TestCase):
+    """Owner 2026-11-04 (security review of 0.1.5, finding 1): branch "*" only for RHEL openssl-libs."""
+
+    ANY = r"^1:\d+\.\d+\.\d+-\d+\.el9(_\d+)?(\.\d+)*$"
+
+    def rhel(self, package, module, version):
+        return {**b("rhel", "9", package, version, "vercmp-rpm"), "module": module}
+
+    def statuses(self, package, module, version, cves):
+        return [resolve_one(self.rhel(package, module, version), c, self.records)["status"] for c in cves]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.records = load_records()
+
+    def test_branch_wildcard_only_for_rhel_openssl_libs(self):
+        ssl = {**RECORDS[5], "package": "openssl-libs", "branch": "*", "fixed": "1:3.2.2-6.el9_5.1", "origin": self.ANY}
+        self.assertEqual(validate_record(ssl), [])
+        self.assertEqual(validate_record({k: v for k, v in ssl.items() if k not in ("fixed", "match")} | {"status": "not-fixed"}), [])
+        plain_php = {**RECORDS[5], "branch": "*", "fixed": "8.0.30-1.el9_2", "origin": self.ANY.replace("1:", "")}
+        for bad in (plain_php, {**plain_php, "status": "not-affected", "fixed": None, "match": None},
+                    {**RECORDS[3], "branch": "*"}, {**RECORDS[0], "branch": "*"}, {**ssl, "vendor": "almalinux"}):
+            with self.subTest(bad=(bad["vendor"], bad["package"], bad["status"])):
+                self.assertIn('branch "*" is only for RHEL openssl-libs', validate_record(bad))
+
+    def test_bundled_data_has_branch_wildcard_only_for_rhel_openssl_libs(self):
+        self.assertEqual({(r["vendor"], r["package"]) for r in self.records if r["branch"] == "*"}, {("rhel", "openssl-libs")})
+
+    def test_plain_rhel_php_on_another_branch_reads_unknown(self):
+        # Review finding 1: 8.3.19-1.el9 read fixed for CVE-2023-0567 (by the 8.0 fix) and not-affected for CVE-2024-11236.
+        self.assertEqual(self.statuses("php", "php", "8.3.19-1.el9", ["CVE-2023-0567", "CVE-2024-11236"]), ["unknown", "unknown"])
+        self.assertEqual(self.statuses("php", "php", "8.2.99-1.el9_9", ["CVE-2023-0567", "CVE-2024-11236"]), ["unknown", "unknown"])
+
+    def test_plain_rhel_php_8_0_reads_as_before(self):
+        cves = ["CVE-2023-0567", "CVE-2024-11236"]
+        self.assertEqual(self.statuses("php", "php", "8.0.30-1.el9_2", cves), ["fixed", "not-affected"])
+        self.assertEqual(self.statuses("php", "php", "8.0.30-8.el9_8.1", cves), ["fixed", "not-affected"])
+        self.assertEqual(self.statuses("php", "php", "8.0.27-1.el9", cves), ["not-fixed", "not-affected"])
+        php = sorted({r["cve"] for r in self.records if r["module"] == "php"})
+        count = lambda v: sorted(collections.Counter(self.statuses("php", "php", v, php)).items())
+        self.assertEqual(count("8.0.30-8.el9_8.1"), [("fixed", 35), ("not-affected", 15), ("unknown", 16)])
+        self.assertEqual(count("8.0.30-1.el9_2"), [("fixed", 6), ("not-affected", 15), ("not-fixed", 29), ("unknown", 16)])
+
+    def test_rhel_openssl_cross_branch_still_reads_fixed(self):
+        # CVE-2024-12797 was fixed on 3.2 (1:3.2.2-6.el9_5.1); the 3.5 rebase carries it. CVE-2025-9230 only from 3.5.
+        cves = ["CVE-2024-12797", "CVE-2025-9230"]
+        self.assertEqual(self.statuses("openssl-libs", "openssl", "1:3.5.8-2.el9_8", cves), ["fixed", "fixed"])
+        self.assertEqual(self.statuses("openssl-libs", "openssl", "1:3.5.1-1.el9", cves), ["fixed", "not-fixed"])
+        self.assertEqual(self.statuses("openssl-libs", "openssl", "1:3.2.2-6.el9_5.1", cves), ["fixed", "not-fixed"])
+        self.assertEqual(self.statuses("openssl-libs", "openssl", "1:3.0.7-27.el9", cves), ["not-fixed", "not-fixed"])
+        ssl = sorted({r["cve"] for r in self.records if r["module"] == "openssl"})
+        self.assertEqual(sorted(collections.Counter(self.statuses("openssl-libs", "openssl", "1:3.5.8-2.el9_8", ssl)).items()),
+                         [("fixed", 66), ("not-affected", 8), ("not-fixed", 19), ("unknown", 2)])
 
 
 class TestBundledData(unittest.TestCase):
