@@ -253,6 +253,12 @@ pre-upgrade binary.
 To find processes that need a restart, use needrestart; it does not map
 processes to CVEs or check fixed versions.
 
+Vulnerability briefings such as Cloudflare's Zero Wire tell you which
+vulnerabilities matter now and what to check. stillmapped answers one part of
+that on the server itself: is the code that is running fixed. For PHP, see
+their [php2shell briefing](https://radar.cloudflare.com/security/zero-wire/php2shell);
+stillmapped's fix records still come only from the vendors.
+
 ## Known gaps
 
 Each one fails closed (`unknown` or exit 2), never `fixed`.
