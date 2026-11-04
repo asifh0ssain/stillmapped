@@ -97,3 +97,13 @@ win silently, as the disagreement check in `resolve_one` never sees the `*`
 record. Fix idea: a load-time guard in `load_records` that rejects only such
 a disagreeing pair, with a named test; a pair that agrees, or whose records
 cover different builds, stays valid.
+
+## php-cgi and lsphp: advise "restart the web server" (post-launch)
+
+Owner, 2026-11-04 (v0.1.7 report). The text receipt advises "restart this
+process (or the supervisor that runs it)" for a stale php-cgi or lsphp
+process, as for any process that is neither php-fpm nor a server with libphp
+loaded. The web server (or LiteSpeed) usually spawns and respawns them, so
+"restart the web server" is the better advice. Output text only: no verdict
+or exit code changes. Fix idea: match php-cgi and lsphp in `_advice`
+(`stillmapped/cli.py`), with a named test. Post-launch.

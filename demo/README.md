@@ -28,6 +28,20 @@ on disk. Results go to `demo/out/<UTC time>/`: one file per command, and
 | `deb.sh thirdparty` | debian:12 | Rebuilds the vulnerable packages as version `3.0.14-1+thirdparty1`, installs them, scans. Runs stillmapped; `check.py` requires exit 2, `unknown`, and no `fixed` verdict. |
 | `eaphp.sh` | almalinux:9 (amd64) | Installs the oldest `ea-php82-php-cli` that EA4 serves, records its rpm changelog, scans, searches the Grype database for CVE-2026-109618, runs the current stillmapped. stillmapped must answer `unknown` with exit 2. |
 
+## Short demos for a screen recording
+
+Not part of `run.sh`. Each sets up first, waits for Enter in a terminal, then
+runs four steps: the running process, the upgrade with no restart, Trivy and
+Grype, stillmapped.
+
+- `video.sh`: OpenSSL 3.0.14-1~deb12u1 to deb12u2 under a running `openssl s_server` (CVE-2024-6119), about 40 s.
+- `php2shell.sh`: php8.2 8.2.34-1~deb12u1 to 8.2.35-1~deb12u1 (CVE-2026-109618, CVE-2026-109619) under a PHP CLI worker and php-fpm, about 15 s; `php2shell-prep.sh` downloads and verifies the debs as `prep.sh` does. It also adds `SYS_PTRACE`, so root can read the www-data php-fpm workers' maps.
+
+Limit of `php2shell.sh`: the container's `policy-rc.d` denies the restart
+that php8.2-fpm's postinst asks for. On a Debian 12 host with systemd,
+php-fpm under its unit is restarted by the upgrade. The queue worker case
+holds everywhere.
+
 ## Isolation
 
 No `--privileged`, no host network. One added capability,
