@@ -359,6 +359,12 @@ Each one fails closed (`unknown` or exit 2), never `fixed`.
   reported as "chrooted process" (exit 2).
 - DirectAdmin's header path is unverified on a real DirectAdmin host.
 
+This one can give a wrong `not-fixed` (exit 1), never a wrong `fixed`:
+
+- RHEL records come only from the RHEL 9 main stream (BaseOS and AppStream).
+  EUS and E4S fixes are not read, so a host on an EUS or E4S release that has
+  the fix can report `not-fixed`.
+
 Trust limits. These can give a wrong `fixed`:
 
 - Inside a container, verdicts use the container's own package database, which
