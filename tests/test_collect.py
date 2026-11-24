@@ -498,7 +498,7 @@ class TestWorkers(unittest.TestCase):
         self.assertEqual(len(problems), 3)
 
     def test_source_build_needs_root_owned_header(self):
-        write(self.root, "usr/local/php83/sbin/php-fpm", "")
+        write(self.root, "usr/local/php83/sbin/php-fpm", "ELF\0X-Powered-By: PHP/8.3.36\0")
         write(self.root, "usr/local/php83/include/php/main/php_version.h", '#define PHP_VERSION "8.3.36"\n')
         fake_proc(self.root, 50, "/usr/local/php83/sbin/php-fpm")
         _, extra, problems = self.workers()
@@ -506,6 +506,48 @@ class TestWorkers(unittest.TestCase):
         self.assertEqual(problems, [])
         with patch.object(c, "_root_owned", return_value=False):
             self.assertEqual(len(self.workers()[2]), 1)
+
+    def test_leftover_binary_is_not_judged_by_a_newer_header(self):
+        # Audit #4: an old binary left in a rebuilt prefix took the new header's version (false fixed, exit 0).
+        write(self.root, "usr/local/php82/bin/lsphp", "ELF\0" + "8.2.20\0")
+        write(self.root, "usr/local/php82/include/php/main/php_version.h", '#define PHP_VERSION "8.2.34"\n')
+        fake_proc(self.root, 500, "/usr/local/php82/bin/lsphp")
+        procs, extra, problems = self.workers()
+        self.assertEqual((procs, extra), ([], []))
+        self.assertEqual(problems, ["pid 500 runs /usr/local/php82/bin/lsphp, which no checked package or build "
+                                    "installed: its binary does not carry version 8.2.34"])
+
+    def test_binary_version_must_match_exactly(self):
+        # "8.3.3" is a prefix of "8.3.36": not the same version.
+        write(self.root, "usr/local/php83/sbin/php-fpm", "ELF\0" + "8.3.36\0")
+        write(self.root, "usr/local/php83/include/php/main/php_version.h", '#define PHP_VERSION "8.3.3"\n')
+        fake_proc(self.root, 501, "/usr/local/php83/sbin/php-fpm")
+        self.assertIn("does not carry version 8.3.3", self.workers()[2][0])
+        write(self.root, "usr/local/php83/sbin/php-fpm", "ELF\0" + "8.3.3\0" + "PHP/8.3.36\0")
+        write(self.root, "usr/local/php83/include/php/main/php_version.h", '#define PHP_VERSION "8.3.36"\n')
+        self.assertEqual(self.workers()[2], [])
+        # Review: a prerelease or a longer version is not the header's version.
+        for old in ("8.3.36RC1", "8.3.36-dev", "18.3.36", "8.3.36.1", "8.3.36+deb12", "8.3.36~rc1"):
+            write(self.root, "usr/local/php83/sbin/php-fpm", f"ELF\0PHP/{old}\0")
+            self.assertIn("does not carry version 8.3.36", self.workers()[2][0], old)
+
+    def test_unreadable_source_binary_is_untraced(self):
+        write(self.root, "usr/local/php83/include/php/main/php_version.h", '#define PHP_VERSION "8.3.36"\n')
+        write(self.root, "usr/local/php83/sbin/php-fpm", "ELF\0PHP/8.3.36\0")
+        fake_proc(self.root, 502, "/usr/local/php83/sbin/php-fpm")
+        os.remove(os.path.join(self.root, "usr/local/php83/sbin/php-fpm"))  # after fake_proc, which reads it
+        os.mkfifo(os.path.join(self.root, "usr/local/php83/sbin/php-fpm"))
+        problems = self.workers()[2]
+        self.assertEqual(len(problems), 1)
+        self.assertIn("its binary can't be read", problems[0])
+
+    def test_rebuilt_source_build_still_restart_needed(self):
+        # Review: a process on the pre-rebuild binary is stale (exit 1); the new file carries the version.
+        write(self.root, "usr/local/php83/sbin/php-fpm", "ELF\0PHP/8.3.36\0")
+        write(self.root, "usr/local/php83/include/php/main/php_version.h", '#define PHP_VERSION "8.3.36"\n')
+        fake_proc(self.root, 503, "/usr/local/php83/sbin/php-fpm (deleted)", old=b"ELF\0PHP/8.3.20\0")
+        procs, extra, problems = self.workers()
+        self.assertEqual(([(p["pid"], p["stale"]) for p in procs], problems), ([("503", True)], []))
 
     def test_container_checked_against_its_own_packages(self):
         # Review: any other mount namespace was assumed to be Docker and skipped.
@@ -907,6 +949,35 @@ class TestLibraries(unittest.TestCase):
         fake_proc(root, 17, "/usr/bin/legacy", maps=["/usr/lib/x86_64-linux-gnu/libcrypto.so.1.1"])
         self.assertTrue(any("owned by libssl1.1:amd64, which no record covers" in p for p in self.report(root)["problems"]))
 
+    def test_cryptopp_owned_by_its_package_is_skipped(self):
+        # ISSUES.md: Crypto++ matched libcrypto*.so* and gave "owned by libcrypto++8, which no record covers"
+        # (exit 2). Skipped only when the package database says a Crypto++ package owns the file.
+        from stillmapped.resolve import exit_code
+        root = self.host()
+        lib = "/usr/lib/x86_64-linux-gnu/libcrypto++.so.8"
+        write(root, "var/lib/dpkg/info/libcrypto++8t64:amd64.list", f"{lib}\n")
+        fake_proc(root, 18, "/usr/bin/app", maps=[lib])
+        r = self.report(root)
+        self.assertFalse([p for p in r["problems"] + r["info"] if "crypto++" in p], r)
+        self.assertEqual((self.statuses(r), exit_code(r)), ([("fixed", None)], 0))
+
+    def test_cryptopp_not_owned_by_a_package_is_still_unknown(self):
+        from stillmapped.resolve import exit_code
+        root = self.host()
+        fake_proc(root, 19, "/usr/bin/app", maps=["/usr/local/lib/libcryptopp.so.8"])
+        r = self.report(root)
+        self.assertIn("pid 19 runs /usr/local/lib/libcryptopp.so.8, which no checked package or build "
+                      "installed: bundled copy, not owned by a package", r["problems"])
+        self.assertEqual(exit_code(r), 2)
+
+    def test_cryptopp_package_names(self):
+        for name in ("libcrypto++8:amd64", "libcrypto++8t64:arm64", "libcrypto++6", "cryptopp", "libcryptopp8_9_0",
+                     "libcryptopp"):
+            self.assertTrue(c._CRYPTOPP.fullmatch(name), name)
+        for name in ("libssl3:amd64", "openssl-libs", "libcrypto++", "libcrypto++8-openssl", "cryptopp-openssl",
+                     "libcrypto3", "xcryptopp"):
+            self.assertIsNone(c._CRYPTOPP.fullmatch(name), name)
+
     def test_rpm_library_package_needs_no_php_file(self):
         with patch.object(c, "_which", return_value="/usr/bin/rpm"):
             builds, problems = c.from_rpm(("almalinux", "9"), fake_runner(
@@ -926,8 +997,8 @@ class TestLibraries(unittest.TestCase):
 
     def test_scope_names_what_is_checked(self):
         r = self.report(self.host())
-        self.assertEqual(r["limits"], ["libcrypto.so.3: every mapped libcrypto*.so* file is checked; "
-                                       "a copy linked statically into a program is not seen"])
+        self.assertEqual(r["limits"], ["libcrypto.so.3: every mapped libcrypto*.so* file is checked (one a Crypto++ package owns is skipped); "
+                                       "a copy linked statically into a program, or under another name, is not seen"])
 
 
 class TestPackageConsistency(unittest.TestCase):
@@ -1001,6 +1072,7 @@ class TestHostileFiles(unittest.TestCase):
 
     def box_scan(self, prep):
         root, box = TestLibraries.host(None), TestLibraries.host(None)
+        self.root = root
         fake_proc(root, 30, "/usr/bin/openssl", maps=[LIB + " (deleted)"], proot=box)
         prep(box)
         return c.collect(root, fake_runner({}), libs={"libssl3": "openssl"}, files={"libcrypto.so.3": "openssl"})
@@ -1012,6 +1084,18 @@ class TestHostileFiles(unittest.TestCase):
         inv = self.box_scan(prep)
         self.assertEqual(inv["mappings"], [])
         self.assertTrue(any("pid 30" in p for p in inv["problems"]))
+
+    def test_cryptopp_in_a_container_is_not_skipped(self):
+        # Review: container root can write its own file lists, so a container's Crypto++ owner
+        # must not hide a mapping; it stays "owned by ..., which no record covers" (exit 2).
+        lib = "/usr/lib/x86_64-linux-gnu/libcrypto++.so.8"
+        def prep(box):
+            write(box, lib.lstrip("/"), "crypto++")
+            write(box, "var/lib/dpkg/info/libcrypto++8:amd64.list", f"{lib}\n")
+            fake_proc(self.root, 31, "/usr/bin/app", maps=[lib], proot=box)
+        inv = self.box_scan(prep)
+        self.assertTrue(any("pid 31" in p and "owned by libcrypto++8:amd64, which no record covers" in p
+                            for p in inv["problems"]), inv["problems"])
 
     def test_installed_file_replaced_by_fifo_does_not_block(self):
         def prep(box):

@@ -49,6 +49,8 @@ _PHP_VERSION_H = re.compile(r'#define PHP_VERSION "([^"]+)"')
 # process with a PHP module mapped (Apache, NGINX Unit, uWSGI's PHP plugin).
 _PHP_EXE = re.compile(r"(php-fpm|php-cgi|lsphp|php)[\d.]*$|frankenphp$")
 _PHP_MODULE = re.compile(r"/(libphp|mod_php)[^/]*\.so")
+# Crypto++ packages (dpkg libcrypto++N[t64], rpm cryptopp or libcryptoppN): their libcrypto*.so* is not OpenSSL.
+_CRYPTOPP = re.compile(r"(libcrypto\+\+\d+(t64)?|cryptopp|libcryptopp[\d_]*)(:[a-z0-9_]+)?")
 # A file that is PHP itself. A package counts as a PHP build only if it
 # installs one: cPanel's ea-phpXX-runtime shares the build's name but not its code.
 _PHP_FILE = re.compile(r"/(?:s?bin|cgi-bin)/(?:php-fpm|php-cgi|lsphp|php)[\d.]*$|/(?:libphp|mod_php)[^/]*\.so$")
@@ -373,6 +375,15 @@ def _tampered(proot, b, path, runner):
             line.endswith(" " + path) and (line[0] in "S?" or line[2] in "5?" or line.startswith("missing"))
             for line in out.splitlines())
         return "it fails rpm -V" if bad else None
+    if b["source"] in ("directadmin", "source"):  # audit #4: the header's version must be the binary's own
+        try:
+            data = _slurp(proot, path)
+        except OSError as e:
+            return f"its binary can't be read ({e.strerror or e})"
+        # Exact: no digit or dot before, nothing a version continues with after (8.3.0RC1, 8.4.1-dev). Literal first: fast.
+        found = any(not m.start() or data[m.start() - 1] not in b"0123456789." for m in
+                    re.finditer(re.escape(b["version"].encode()) + rb"(?![0-9A-Za-z.+~_-])", data))
+        return None if found else f"its binary does not carry version {b['version']}"
     if b["source"] != "dpkg":
         return None
     entry = _dpkg_owns(proot, b["where"], path)
@@ -528,11 +539,14 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
                         why = f"it is not the file {b['source']} was read for in {'the container' if in_container else 'the host'}"
                     if b is None and module != "php":
                         other = rpm_name or _dpkg_owner(proot, path, indexes.setdefault(key, {}))
-                        why = f"owned by {other}, which no record covers" if other else "bundled copy, not owned by a package"
+                        why = (False if other and not in_container and _CRYPTOPP.fullmatch(other.split(" ")[0]) else  # Crypto++, host only
+                               f"owned by {other}, which no record covers" if other else "bundled copy, not owned by a package")
                     owners[ck] = why
                     if isinstance(why, dict) and (in_container or b["source"] == "source"):
                         extra.append({**b, "where": f"{b['where']} (pid {pid}{', container' if in_container else ''})"})
                 b = owners[ck]
+                if b is False:
+                    continue
                 if not isinstance(b, dict):  # None (no owner) or why its file isn't the package's
                     notes.append(f"pid {pid} runs {mapped}, which no checked package or build installed"
                                  + (f": {b}" if b else ""))

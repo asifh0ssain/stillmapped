@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.1.8 (2026-11-24)
+
+Two scanner fixes and a data refresh.
+
+- Audit lead #4 (validated in a sandbox, false `fixed` and exit 0): for a
+  source or DirectAdmin PHP build, the version came only from the prefix's
+  root-owned `php_version.h`, and nothing tied the running binary to it. An
+  old binary left in a rebuilt prefix (for example `bin/lsphp` at 8.2.20 next
+  to a header saying 8.2.34) read `fixed`. The installed file at the mapped
+  path must now carry the header's exact version string: no digit or dot
+  before it, and nothing a version continues with after it, so 8.2.3 does not
+  match 8.2.34 and a leftover 8.3.0RC1 or 8.4.1-dev does not match 8.3.0 or
+  8.4.1 (review of this fix). Otherwise the process is
+  untraced, "its binary does not carry version X" (exit 2). The same check
+  closes leads #8 (a private mount view of a DirectAdmin prefix) and #9 (a
+  rebuild during the scan). Checked against real PHP 8.2 and 8.3 binaries
+  from Debian, Ubuntu and RHEL. A binary over 64 MiB can't be read: exit 2
+  (ISSUES.md). Named tests.
+- Crypto++ (ISSUES.md): a `libcrypto*.so*` that the host package database
+  says a Crypto++ package owns (dpkg `libcrypto++N`, rpm `cryptopp`,
+  `libcryptoppN`) is skipped, not reported as "owned by libcrypto++8, which
+  no record covers" (exit 2). The skip is decided by the package owner, not
+  the file name, and only on the host: an unowned copy or a container's
+  Crypto++ is still checked. The `[SCOPE]` line says so. Named tests.
+- Data refresh from snapshot `20261124T193258Z` (manifest SHA-256
+  `8dd83499ea42b01a9b886eed8d4d463cca53322e090ba8af548151dab4d19c76`): 193 CVEs (84 PHP,
+  109 OpenSSL), 1563 records (1350 fixed, 147 not affected, 66 not fixed).
+  Against 0.1.7: 32 CVEs added, none removed; 283 records added, 17 changed,
+  none removed; no fixed record became not fixed or unknown. Three tests that
+  pin counts of the bundled data are updated.
+- README: the RHEL EUS/E4S limit (records come from the RHEL 9 main stream
+  only, so an EUS or E4S host with the fix can read `not-fixed`).
+
 ## 0.1.7 (2026-11-04)
 
 Fixes from the php2shell demo report (two observations), and docs. The

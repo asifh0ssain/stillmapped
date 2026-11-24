@@ -89,7 +89,8 @@ class TestCli(unittest.TestCase):
         self.assertIn("\\x1b", out)
 
     def test_problems_shown_and_exit_2(self):
-        code, out, _ = run(inv={**INV, "problems": ["no /proc: running PHP processes not checked"]})
+        # Pinned to a hand CVE the fixture build is fixed for: refreshed data may add a not-fixed (exit 1).
+        code, out, _ = run("--cve", "CVE-2026-109618", inv={**INV, "problems": ["no /proc: running PHP processes not checked"]})
         self.assertEqual(code, 2)
         self.assertIn("[NOT FULLY CHECKED]", out)
 
@@ -117,7 +118,7 @@ class TestCli(unittest.TestCase):
         self.assertIn("container package database", out)
         self.assertIn("[SCOPE] libcrypto.so.3: every mapped libcrypto*.so* file is checked", out)
         j = json.loads(jout)
-        self.assertIn("linked statically into a program is not seen", j["limits"][0])
+        self.assertIn("linked statically into a program, or under another name, is not seen", j["limits"][0])
         self.assertEqual([r["status"] for r in j["results"]], ["fixed", "restart-needed"])
 
 

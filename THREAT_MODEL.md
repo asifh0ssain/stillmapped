@@ -23,7 +23,10 @@ they can write the package database those processes would be judged by.
 in a chain is not owned by root, is group- or world-writable, or is reached
 through a symlink, the result is unknown. Package databases (dpkg, rpm) and
 `/proc` are root-owned by design. A version read from a path a user can write
-(a Homebrew Cellar, a user-owned install prefix) is not evidence.
+(a Homebrew Cellar, a user-owned install prefix) is not evidence. For a
+source or DirectAdmin build, the version header is evidence only for a
+binary that carries the header's exact version string: a binary left over
+from an older build in the same prefix is untraced.
 
 ## Trust in package databases and image metadata
 
@@ -49,7 +52,12 @@ tool. Every result names its evidence in a `trust` field: `host-pkgdb`,
 
 ## Not covered
 
-- OpenSSL linked statically into a program.
+- OpenSSL linked statically into a program, or a copy under a name outside
+  `libcrypto*.so*` (renamed, or a memfd with another name).
+- A `libcrypto*.so*` that the package database says a Crypto++ package owns
+  (dpkg `libcrypto++N`, rpm `cryptopp`, `libcryptoppN`) is skipped as not
+  OpenSSL, on the host only. The same name outside such a package, or in a
+  container, is still checked.
 - Version strings as the package manager records them: a repository that
   copies a vendor's exact version format can't be told apart.
 - A compromised kernel.

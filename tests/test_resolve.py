@@ -211,8 +211,8 @@ class TestRhelBranchWildcard(unittest.TestCase):
         self.assertEqual(self.statuses("php", "php", "8.0.27-1.el9", cves), ["not-fixed", "not-affected"])
         php = sorted({r["cve"] for r in self.records if r["module"] == "php"})
         count = lambda v: sorted(collections.Counter(self.statuses("php", "php", v, php)).items())
-        self.assertEqual(count("8.0.30-8.el9_8.1"), [("fixed", 35), ("not-affected", 15), ("unknown", 16)])
-        self.assertEqual(count("8.0.30-1.el9_2"), [("fixed", 6), ("not-affected", 15), ("not-fixed", 29), ("unknown", 16)])
+        self.assertEqual(count("8.0.30-8.el9_8.1"), [("fixed", 35), ("not-affected", 21), ("not-fixed", 9), ("unknown", 19)])
+        self.assertEqual(count("8.0.30-1.el9_2"), [("fixed", 6), ("not-affected", 21), ("not-fixed", 38), ("unknown", 19)])
 
     def test_rhel_openssl_cross_branch_still_reads_fixed(self):
         # CVE-2024-12797 was fixed on 3.2 (1:3.2.2-6.el9_5.1); the 3.5 rebase carries it. CVE-2025-9230 only from 3.5.
@@ -223,7 +223,7 @@ class TestRhelBranchWildcard(unittest.TestCase):
         self.assertEqual(self.statuses("openssl-libs", "openssl", "1:3.0.7-27.el9", cves), ["not-fixed", "not-fixed"])
         ssl = sorted({r["cve"] for r in self.records if r["module"] == "openssl"})
         self.assertEqual(sorted(collections.Counter(self.statuses("openssl-libs", "openssl", "1:3.5.8-2.el9_8", ssl)).items()),
-                         [("fixed", 66), ("not-affected", 8), ("not-fixed", 19), ("unknown", 2)])
+                         [("fixed", 67), ("not-affected", 17), ("not-fixed", 22), ("unknown", 3)])
 
 
 class TestBundledData(unittest.TestCase):

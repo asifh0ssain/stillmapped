@@ -183,7 +183,8 @@ That leaves:
 - cPanel `ea-php`, CloudLinux `alt-php`, Plesk `plesk-php`
 - Docker images built from the official `php` image
 - DirectAdmin CustomBuild `/usr/local/phpXX`, when its version header is
-  root-owned all the way down. Homebrew is not read: its Cellar is user-owned,
+  root-owned all the way down and the running binary carries that exact
+  version. Homebrew is not read: its Cellar is user-owned,
   so its version is not evidence; a running Homebrew PHP is reported untraced.
 - Every running PHP (php-fpm, php-cgi, lsphp, CLI daemons, Apache or NGINX Unit
   with a PHP module), traced to the package or source build that installed it,
@@ -264,8 +265,8 @@ authenticity: see "Trust" below.
   not running, or a renamed binary, is not seen. A `[SCOPE]` line and the
   `limits` field say so.
 - For OpenSSL, every mapped file whose name matches `libcrypto*.so*` is
-  checked, whatever its path (Crypto++'s `libcryptopp` matches too, and is
-  reported as owned by a package no record covers). A copy no package owns (for example one bundled in a Python
+  checked, whatever its path (Crypto++'s `libcrypto++`/`libcryptopp` too,
+  unless a host package database says a Crypto++ package owns it). A copy no package owns (for example one bundled in a Python
   wheel) is reported with its path as "bundled copy, not owned by a package"
   (exit 2). OpenSSL linked statically into a program is not seen, and exit 0
   says nothing about it. Text and JSON output state this in a `[SCOPE]` line
@@ -379,17 +380,17 @@ Trust limits. These can give a wrong `fixed`:
 
 ## Status
 
-Bundled data: 161 CVEs (66 PHP, 95 OpenSSL), 1280 records (1123 fixed, 103
-not affected, 54 not fixed), one file per CVE. `tools/sync` generated it from the vendor feeds snapshot of 2026-11-03
-(`20261103T175904Z`); every record comes from one primary vendor feed.
+Bundled data: 193 CVEs (84 PHP, 109 OpenSSL), 1563 records (1350 fixed, 147
+not affected, 66 not fixed), one file per CVE. `tools/sync` generated it from the vendor feeds snapshot of 2026-11-24
+(`20261124T193258Z`); every record comes from one primary vendor feed.
 
 | Distro | Records (of which not affected, not fixed) |
 |---|---|
-| Debian 12 / 13 | 158 (41, 1) / 136 (8, 0) |
-| Ubuntu 22.04 / 24.04 / 26.04 / 26.10 | 111 / 87 / 65 / 2 |
-| RHEL 9 | 284 (54, 53) |
-| SLES 15 SP4 / SP5 / SP6 / SP7 | 16 / 26 / 45 / 130 |
-| php.net upstream | 220 |
+| Debian 12 / 13 | 189 (55, 6) / 167 (11, 14) |
+| Ubuntu 22.04 / 24.04 / 26.04 / 26.10 | 123 / 100 / 82 / 19 |
+| RHEL 9 | 363 (81, 46) |
+| SLES 15 SP4 / SP5 / SP6 / SP7 | 16 / 26 / 45 / 156 |
+| php.net upstream | 277 |
 
 How the vendors' statements become records:
 - Debian: a fix made before the release shipped is fixed in the release's

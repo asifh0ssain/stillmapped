@@ -203,8 +203,8 @@ def resolve(inventory, records, cves, strict=True):
     for mod in sorted(absent):
         name, bad = "PHP" if mod == "php" else mod, strict or absent == mods
         (problems if bad else info).append(f"no {name} build found")
-    limits = [f"{f}: every mapped {f.split('.so')[0]}*.so* file is checked; a copy linked statically "
-              "into a program is not seen" for f in sorted({r["file"] for r in records if r["cve"] in cves and r.get("file")})]
+    limits = [f"{f}: every mapped {f.split('.so')[0]}*.so* file is checked (one a Crypto++ package owns is skipped); "
+              "a copy linked statically into a program, or under another name, is not seen" for f in sorted({r["file"] for r in records if r["cve"] in cves and r.get("file")})]
     limits += ["PHP that no package owns is seen only while running as php, php-fpm, php-cgi, lsphp or frankenphp, or with libphp loaded."] * ("php" in mods)  # review 5 F1, F2
     stale = [w for w in inventory["workers"] if w["stale"]]
     return {"results": results, "stale_workers": stale, "problems": problems, "info": info, "limits": limits,
