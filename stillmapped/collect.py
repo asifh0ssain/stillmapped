@@ -299,12 +299,28 @@ def _same_code(d, line, proot, path):
     return mapped == installed, {"mapped_sha256": mapped, "installed_sha256": installed}
 
 
+def _user_mounts(root):
+    """Mount points, inside root, of filesystems a non-root user can mount (audit #1): FUSE, and
+    udisks under /media or /run/media. By path, not device: a btrfs subvolume has its own. nosuid
+    is no sign: systemd sets it on a hardened service's /. None if root has no mountinfo (a test
+    tree; a process gone since, which is then dropped)."""
+    try:
+        with open(root[:-4] + "mountinfo" if root.endswith("/root") else os.path.join(root, "proc/self/mountinfo"),
+                  encoding="utf-8", errors="replace") as fh:  # as maps is read; strict would exit 3 on a user's name (review)
+            mounts = [(re.sub(r"\\([0-7]{3})", lambda e: chr(int(e[1], 8)), m[4]), m[m.index("-") + 1])
+                      for m in (line.split() for line in fh) if "-" in m[6:]]
+    except FileNotFoundError:
+        return set()
+    return {t.rstrip("/") + "/" for t, fstype in mounts if fstype.startswith("fuse") or t.startswith(("/media/", "/run/media/"))}
+
+
 def _root_owned(root, path):
     """The evidence rule (THREAT_MODEL.md): path inside root, and every
     directory on the way to it, is owned by root, not group- or
-    world-writable, and not a symlink. root itself may be /proc/PID/root.
+    world-writable, not a symlink, and not on a mount a user can make. root itself may be /proc/PID/root.
     A missing tail (a file gone since it was mapped) is judged by the
     directories that lead to it."""
+    user = _user_mounts(root)  # read before and after the lstats: a FUSE mount detached mid-check is still seen (review)
     sts, cur, parts = [os.stat(root)], root, [p for p in path.split("/") if p]
     for i, part in enumerate(parts):
         cur = os.path.join(cur, part)
@@ -313,6 +329,8 @@ def _root_owned(root, path):
         except FileNotFoundError:
             if i < len(parts) - 1:  # review: a missing directory (or a root gone with its process) proves nothing
                 raise
+    if any(f"/{'/'.join(parts)}/".startswith(t) for t in user | _user_mounts(root)):  # parts: also a relative path (review)
+        return False
     return all(not stat.S_ISLNK(s.st_mode) and s.st_uid == ROOT_UID and not s.st_mode & 0o022 for s in sts)
 
 

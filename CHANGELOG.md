@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.1.10 (2026-11-25)
+
+Audit #1, confirmed on a real kernel (Ubuntu 24.04 VM, kernel 6.8): a non-root
+user mounted an ext4 image whose inodes report uid 0, with FUSE
+(`fuse2fs -o allow_other`, needs `user_allow_other`) or with udisks (allowed
+by default in an active desktop session), and ran a binary from it beside a
+"PHP 8.4.99" header. 0.1.9 read `fixed`, exit 0. The evidence rule now also
+rejects any path component on a FUSE mount or a mount under `/media` or
+`/run/media`, matched by mount point in the process's own `mountinfo`
+(not by device: a btrfs subvolume has its own); the result is untraced
+(exit 2). `nosuid` is not used as a sign: systemd sets it on the
+root of hardened services. Mount points are read before and after the checks, so a FUSE
+server that detaches its mount mid-check is still seen; mountinfo is decoded
+with replacement (a non-UTF-8 mount point made every scan exit 3), and a
+relative path (DirectAdmin) is matched too (review). The same VM confirmed the 0.1.9 fixes for audit #2
+(setuid bwrap into a user-built root) and #3 (a move into new namespaces
+during the scan): 0.1.8 read `fixed`, exit 0; 0.1.9 exits 2. The scanner
+budget is raised to 905 logic lines (owner, 2026-11-25).
+
 ## 0.1.9 (2026-11-24)
 
 Fixes for the remaining audit leads that a sandbox validation confirmed, and for

@@ -1675,6 +1675,57 @@ class TestEvidenceRule(unittest.TestCase):
         self.assertEqual((workers, extra), ([], []))
         self.assertTrue(any("pid 17" in p for p in problems))
 
+    def test_user_mount_is_not_evidence(self):
+        # Audit #1, real kernel (VM 2026-11-24): a FUSE (allow_other) or udisks mount whose inodes
+        # report uid 0 read FIXED, exit 0. A component on such a mount is not evidence.
+        root = tempfile.mkdtemp()
+        write(root, "home/u/bin/php", "ELF\0PHP/8.4.99\0")
+        write(root, "home/u/include/php/main/php_version.h", '#define PHP_VERSION "8.4.99"\n')
+        dev = os.stat(root).st_dev
+        line = "36 1 {}:{} / {} rw,nosuid,nodev shared:1 - {} /dev/x rw\n"  # nosuid alone: a hardened service's /
+        for target, fstype, path, ok in (
+                ("/home/u", "fuse.fuse2fs", "/home/u/a.h", False), ("/media/u/smt1", "ext4", "/media/u/smt1/a.h", False),
+                ("/run/media/u/x", "ext4", "/run/media/u/x/a.h", False), ("/home/u", "fuseblk", "/home/u/a.h", False),
+                ("/home", "fuse.sshfs", "/home/u/a.h", False), ("/media/u/my\\040disk", "btrfs", "/media/u/my disk/a.h", False),
+                ("/", "ext4", "/home/u/a.h", True), ("/home/u2", "fuse.x", "/home/u/a.h", True)):
+            write(root, path.lstrip("/"), "x")
+            write(root, "proc/self/mountinfo", line.format(os.major(dev), os.minor(dev), target, fstype))
+            with as_root():
+                self.assertEqual(c._root_owned(root, path), ok, (target, fstype))
+        line = line.format(os.major(dev), os.minor(dev), "/home/u", "fuse.fuse2fs")
+        fake_proc(root, 19, "/home/u/bin/php")
+        write(root, "proc/19/mountinfo", line)
+        with as_root(), patch.object(c, "_which", return_value=None):
+            inv = c.collect(root, fake_runner({}))
+        self.assertEqual(inv["builds"], [])
+        self.assertTrue(any(p.startswith("pid 19 runs /home/u/bin/php") for p in inv["problems"]), inv["problems"])
+
+    def test_process_mountinfo_is_read_through_its_root(self):
+        # Audit #1: the mounts are the ones the process sees (/proc/PID/mountinfo beside its root).
+        root = tempfile.mkdtemp()
+        os.makedirs(os.path.join(root, "proc/7/root"))
+        write(root, "proc/7/mountinfo", "1 0 0:50 / / rw,nosuid - fuse.x x rw\n")
+        self.assertEqual(c._user_mounts(os.path.join(root, "proc/7/root")), {"/"})
+        write(root, "proc/7/mountinfo", "1 0 7:0 / /media/u/my\\040disk rw - btrfs /dev/loop0 rw\n")
+        self.assertEqual(c._user_mounts(os.path.join(root, "proc/7/root")), {"/media/u/my disk/"})  # escapes decoded
+        self.assertEqual(c._user_mounts(root), set())  # no mountinfo: a test tree
+        with open(os.path.join(root, "proc/7/mountinfo"), "wb") as fh:  # review: not UTF-8 raised, exit 3
+            fh.write(b"1 0 0:51 / /home/u/m\xff rw - fuse.x x rw\n")
+        self.assertEqual(c._user_mounts(os.path.join(root, "proc/7/root")), {"/home/u/m\ufffd/"})
+
+    def test_user_mount_seen_before_or_after_the_checks(self):
+        # Review: a FUSE server can detach its mount during the lstats; a relative path
+        # (from_directadmin with root "/") must be matched too.
+        root = tempfile.mkdtemp()
+        write(root, "home/u/a.h", "x")
+        for seen in ([set(), {"/home/u/"}], [{"/home/u/"}, set()]):
+            with as_root(), patch.object(c, "_user_mounts", side_effect=seen):
+                self.assertFalse(c._root_owned(root, "/home/u/a.h"))
+        with as_root(), patch.object(c, "_user_mounts", return_value={"/home/u/"}):
+            self.assertFalse(c._root_owned(root, "home/u/a.h"))
+        with as_root(), patch.object(c, "_user_mounts", return_value=set()):
+            self.assertTrue(c._root_owned(root, "home/u/a.h"))
+
     def test_user_owned_directadmin_header_is_not_evidence(self):
         root = tempfile.mkdtemp()
         os.makedirs(os.path.join(root, "usr/local/directadmin"))

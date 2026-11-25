@@ -21,7 +21,10 @@ they can write the package database those processes would be judged by.
 
 `fixed` needs evidence from root-owned sources only. If any file or directory
 in a chain is not owned by root, is group- or world-writable, or is reached
-through a symlink, the result is unknown. Package databases (dpkg, rpm) and
+through a symlink, or sits on a filesystem a non-root user can mount (FUSE,
+or udisks under `/media` or `/run/media`, as the process's own mount table
+lists it), the result is unknown. A user mount can report uid 0 for files the
+user wrote (audit #1, shown on a real kernel). Package databases (dpkg, rpm) and
 `/proc` are root-owned by design. A version read from a path a user can write
 (a Homebrew Cellar, a user-owned install prefix) is not evidence. For a
 source or DirectAdmin build, the version header is evidence only for a

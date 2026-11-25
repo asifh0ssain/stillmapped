@@ -97,18 +97,23 @@ record. Fix idea: a load-time guard in `load_records` that rejects only such
 a disagreeing pair, with a named test; a pair that agrees, or whose records
 cover different builds, stays valid.
 
-## Mounts a user controls (FUSE allow_other, udisks): not yet proven
+## User mounts outside the udisks default places
 
-Audit #1. The evidence rule trusts `st_uid` and the mode bits, and does not
-check which filesystem a path is on. A sandbox run showed that a PHP prefix
-whose files report uid 0 reads `fixed` (exit 0). On a real kernel this needs a
-non-root user to mount a filesystem that reports uid 0 where the scanner reads
-it: FUSE with `user_allow_other` enabled (off by default), or a udisks loop
-mount from an active desktop session (allowed by default polkit rules). Not
-yet tested on a real kernel. Fix idea: fail closed when a component's device
-differs from its root's and the mount is FUSE or a udisks mount
-(`/proc/self/mountinfo`). Audits #2 and #3 are closed in code (0.1.9) but are
-also still to be confirmed on a real kernel.
+Audit #1 follow-up (0.1.10). FUSE mounts and mounts under `/media` or
+`/run/media` are not evidence. A udisks mount an admin moved elsewhere
+(`x-udisks` fstab entries, a custom mount path) is not recognised, and a
+process gone before its `mountinfo` is read is judged without it (it is then
+dropped as gone). Review of 0.1.10 found three more, not fixed:
+- A copy of a udisks mount made by shared propagation (an admin bind of `/`
+  or `/media` elsewhere) and fstab `user`/`users` mounts outside `/media` are
+  not recognised.
+- Mount points are read before and after the lstats, so a FUSE server that
+  detaches its mount during the check is still seen; a mount made and
+  detached inside that window (microseconds, with no signal to time it) is
+  not.
+Fix idea: take each component's mount ID from an `O_PATH` fd's
+`/proc/self/fdinfo` and judge that mount in `mountinfo` (fail closed if it is
+missing); read udisks' own record of its mounts (`/run/udisks2/mounted-fs`).
 
 ## A covered package's file that fails the evidence rule names the wrong reason
 
