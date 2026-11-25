@@ -23,6 +23,7 @@ import subprocess
 from .vercmp import branch
 
 RUN_TIMEOUT = 20  # seconds, per subprocess
+ROOT_UID = 0  # the evidence rule's owner; tests set their own uid for fixture files
 MAX_READ = 64 << 20  # bytes hashed per mapped file at most
 # Scan-wide limits (Codex Security finding 4): processes, matching maps lines and
 # distinct problems. Past any of them the scan stops with one problem (exit 2).
@@ -301,12 +302,18 @@ def _same_code(d, line, proot, path):
 def _root_owned(root, path):
     """The evidence rule (THREAT_MODEL.md): path inside root, and every
     directory on the way to it, is owned by root, not group- or
-    world-writable, and not a symlink. root itself may be /proc/PID/root."""
-    sts, cur = [os.stat(root)], root
-    for part in filter(None, path.split("/")):
+    world-writable, and not a symlink. root itself may be /proc/PID/root.
+    A missing tail (a file gone since it was mapped) is judged by the
+    directories that lead to it."""
+    sts, cur, parts = [os.stat(root)], root, [p for p in path.split("/") if p]
+    for i, part in enumerate(parts):
         cur = os.path.join(cur, part)
-        sts.append(os.lstat(cur))
-    return all(not stat.S_ISLNK(s.st_mode) and s.st_uid == 0 and not s.st_mode & 0o022 for s in sts)
+        try:
+            sts.append(os.lstat(cur))
+        except FileNotFoundError:
+            if i < len(parts) - 1:  # review: a missing directory (or a root gone with its process) proves nothing
+                raise
+    return all(not stat.S_ISLNK(s.st_mode) and s.st_uid == ROOT_UID and not s.st_mode & 0o022 for s in sts)
 
 
 def _dpkg_list(root, pkg, ext="list"):
@@ -437,9 +444,9 @@ def _owner(proot, path, builds, rpm_name, module="php"):
     checked does."""
     prefix = os.path.dirname(os.path.dirname(path))
     for b in builds:
-        if b["module"] == module and (module == "php" and b["where"] == prefix and _root_owned(proot, path)
+        if b["module"] == module and (module == "php" and b["where"] == prefix  # audit #5: packaged files too
                                       or b["source"] == "rpm" and f"{b['where']} {b['version']}" == rpm_name
-                                      or b["source"] == "dpkg" and _dpkg_owns(proot, b["where"], path)):
+                                      or b["source"] == "dpkg" and _dpkg_owns(proot, b["where"], path)) and _root_owned(proot, path):
             return b
     if module != "php":
         return None
@@ -477,7 +484,7 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
     # root -> (builds, problems of its package database, the root and mount namespace they were read from)
     by_root = {host: (list(builds), [], root, own[1])}
     use_rpm = any(b["source"] == "rpm" for b in builds)
-    owners, indexes, rpm_index, workers, mappings, extra, unreadable, lines = {}, {}, {}, [], [], [], 0, 0
+    owners, indexes, rpm_index, workers, mappings, extra, unreadable, lines, seen = {}, {}, {}, [], [], [], 0, 0, []
     limit = (f"scan limit reached (over {MAX_PROCS} processes, {MAX_LINES} matching maps lines or {MAX_PROBLEMS} "
              "problems); processes from pid {} on were not checked")
     for n, pid in enumerate(sorted((p for p in os.listdir(proc) if p.isdigit()), key=int)):
@@ -486,10 +493,14 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
             break
         try:
             d = os.open(os.path.join(proc, pid), os.O_RDONLY | os.O_DIRECTORY)
-        except OSError:
+        except (FileNotFoundError, ProcessLookupError):  # gone; any other error (EMFILE) stops the scan (review)
+            continue
+        except PermissionError:  # hidepid
+            unreadable += 1
             continue
         proot = f"/proc/self/fd/{d}/root"  # through the pinned directory: never another process's root
         pw, pm, notes, exe, kthread = [], [], [], None, None  # committed only if still alive at the end
+        o, r, ix, ex, sp = dict(owners), dict(by_root), dict(indexes), [], []  # so are its cache entries (review 4a)
         try:
             stat = _read(d, "stat")  # "pid (name) state ...": the name may hold ")" too
             fields, name = stat.rsplit(")", 1)[1].split(), stat.partition("(")[2].rpartition(")")[0]
@@ -519,32 +530,35 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
                     notes.append(f"pid {pid} runs {mapped} {why}")
                     continue
                 module = "php" if mapped == php else files[_lib_file(path, files)]
-                if key not in by_root:  # rpm can't read a container's database; dpkg's is a file
+                if key not in r:  # rpm can't read a container's database; dpkg's is a file
                     found, issues = from_dpkg(os_release(proot), proot, libs)
-                    by_root[key] = ([{**b, "db": "container"} for b in found], [f"container of pid {pid}: {p}" for p in issues],
-                                    os.path.join(proc, pid, "root"), ns[1])
-                notes += by_root[key][1]
+                    r[key] = ([{**b, "db": "container"} for b in found], [f"container of pid {pid}: {p}" for p in issues],
+                                os.path.join(proc, pid, "root"), ns[1])
+                notes += r[key][1]
+                sp += [(key, pid)] * in_container
                 # Keyed by mount namespace too: a service with its own (PrivateTmp, a bind
                 # mount) can see another file at the packaged path under the same root.
                 ck = (key, ns[1], path, module)
-                if ck not in owners:
+                if ck not in o:
                     rpm_name = use_rpm and not in_container and _rpm_owner(runner, path, rpm_index)
-                    b = _owner(proot, path, by_root[key][0], rpm_name, module)
+                    b = _owner(proot, path, r[key][0], rpm_name, module)
                     why = b and _tampered(proot, b, path, runner) or b
                     # Another mount view under the same root (a bind mount): its file, and for dpkg its status,
                     # must be the ones the version was read from, or the version is not this code's (Codex finding 3).
-                    src = by_root[key][2]
-                    if why is b and b and b["source"] in ("rpm", "dpkg") and ns[1] != by_root[key][3] and not (
+                    src = r[key][2]
+                    if why is b and b and b["source"] in ("rpm", "dpkg") and ns[1] != r[key][3] and not (
                             _same_file(proot, src, path) and (b["source"] == "rpm" or _same_file(proot, src, "/var/lib/dpkg/status"))):
                         why = f"it is not the file {b['source']} was read for in {'the container' if in_container else 'the host'}"
                     if b is None and module != "php":
-                        other = rpm_name or _dpkg_owner(proot, path, indexes.setdefault(key, {}))
+                        other = rpm_name or _dpkg_owner(proot, path, ix.setdefault(key, {}))
                         why = (False if other and not in_container and _CRYPTOPP.fullmatch(other.split(" ")[0]) else  # Crypto++, host only
                                f"owned by {other}, which no record covers" if other else "bundled copy, not owned by a package")
-                    owners[ck] = why
+                    if isinstance(why, dict) and in_container:  # audit #6: a container's source build is its own evidence
+                        why = {**why, "db": "container"}
+                    o[ck] = why
                     if isinstance(why, dict) and (in_container or b["source"] == "source"):
-                        extra.append({**b, "where": f"{b['where']} (pid {pid}{', container' if in_container else ''})"})
-                b = owners[ck]
+                        ex.append({**why, "where": f"{b['where']} (pid {pid}{', container' if in_container else ''})"})
+                b = o[ck]
                 if b is False:
                     continue
                 if not isinstance(b, dict):  # None (no owner) or why its file isn't the package's
@@ -559,17 +573,23 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
                 else:
                     pm.append({"pid": pid, "start": start, "path": mapped, "file": _lib_file(path, files),
                                "dev": line[3], "inode": line[4], "same": same, "build": b, **info})
-            if _read(d, "stat").rsplit(")", 1)[1].split()[19] != start:  # ESRCH if it exited; start time re-checked
+            # ESRCH if it exited; start time and namespaces re-checked (audit #3: a move after they were read)
+            if _read(d, "stat").rsplit(")", 1)[1].split()[19] != start or [
+                    os.readlink(f"ns/{n}", dir_fd=d) for n in ("user", "mnt")] != ns:
                 raise OSError("it changed during the scan")
+            owners, by_root, indexes = o, r, ix
+            extra, seen = extra + ex, seen + sp
         except PermissionError:
             unreadable += 1
             continue
         except (OSError, IndexError) as e:
             try:  # skip a kernel thread, a process that is gone, or a zombie (no exe, one task left)
-                if kthread is None or kthread or not _read(d, "stat") or exe is None and len(
-                        os.listdir(os.path.join(proc, pid, "task"))) < 2:
+                # review 3: an exe link that can't be read (ENAMETOOLONG) is not a sign of a gone process
+                if kthread or isinstance(e, (FileNotFoundError, ProcessLookupError)) and (kthread is None or not _read(
+                        d, "stat") or (exe is None or _read(d, "stat").rsplit(")", 1)[1].split()[0] in ("Z", "X")) and len(
+                        os.listdir(os.path.join(proc, pid, "task"))) < 2):
                     continue
-            except OSError:
+            except (FileNotFoundError, ProcessLookupError, PermissionError):  # gone (its pid may be reused)
                 continue
             pw, pm, notes = [], [], [f"pid {pid} runs {exe or 'a program whose main thread has exited'} "
                                      f"and was not fully checked ({e})"]
@@ -583,6 +603,20 @@ def running_workers(root="/", builds=(), runner=run, libs={}, files={}):
             problems[limit.format(pid)] = None
     if unreadable:
         problems[f"{unreadable} process(es) unreadable; run as root to check every process"] = None
+    # Audit #10: a container's packages can change mid-scan too. Read again through a process this scan
+    # checked on that root, still in the namespaces it recorded (review 3: not a decoy view).
+    for key, (found, _, _, mnt) in ((k, v) for k, v in by_root.items() if k != host):
+        for p in dict.fromkeys(p for k, p in seen if k == key):
+            try:
+                rp, st = os.path.join(proc, p, "root"), os.stat(os.path.join(proc, p, "root"))
+                if (st.st_dev, st.st_ino) == key and [os.readlink(os.path.join(proc, p, "ns", n)) for n in ("user", "mnt")] == [own[0], mnt]:
+                    if [{**b, "db": "container"} for b in from_dpkg(os_release(rp), rp, libs)[0]] != found:
+                        problems["container packages changed during the scan; run it again"] = None
+                    break
+            except OSError:  # gone, or its pid reused: try the next
+                continue
+        else:
+            problems["a container's packages could not be read again at the end of the scan; run it again"] = None
     return workers, extra, list(problems), mappings
 
 

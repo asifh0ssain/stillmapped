@@ -71,7 +71,7 @@ removed_cves = sorted(cves(old) - cves(new))
 worse = [(k, new[k]) for k in sorted(old.keys() & new.keys()) if old[k]["status"] == "fixed" and new[k]["status"] in ("not-fixed", "unknown")]
 gone = [(k, old[k]) for k in sorted(old.keys() - new.keys()) if old[k]["status"] == "fixed"]
 new_skips = sorted(rows(os.path.join(new_dir, "skipped.tsv")) - rows(old_skips))
-total = collections.Counter(kind for c in per.values() for kind in c)
+total = sum(per.values(), collections.Counter())
 status = collections.Counter(r["status"] for r in new.values())
 
 print(f"CVEs: {len(cves(old))} -> {len(cves(new))}, {len(added_cves)} added, {len(removed_cves)} removed")

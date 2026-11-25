@@ -207,7 +207,7 @@ restart: php-fpm (a php-fpm master or pool), the web server (libphp loaded),
 or the process itself or the supervisor that runs it (CLI, queue worker,
 daemon). Each result names its evidence
 (`trust:` in the text receipt, `trust` in JSON): `host-pkgdb`,
-`container-pkgdb`, `image-metadata` or `root-owned-source`. Run as root to see
+`container-pkgdb`, `container-source`, `image-metadata` or `root-owned-source`. Run as root to see
 every running process.
 
 | Exit | Meaning |

@@ -8,6 +8,15 @@ from unittest.mock import patch
 from stillmapped import collect as c
 
 
+def setUpModule():
+    # Fixture files belong to the user running the tests: count that user as root for the
+    # evidence rule (audit #5 applies it to packaged files too). Every other rule still holds.
+    patcher = patch.object(c, "ROOT_UID", os.getuid())
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+    unittest.addModuleCleanup(os.umask, os.umask(0o022))  # fixture dirs must not be group-writable (Ubuntu umask 002)
+
+
 def fake_runner(outputs):
     """Runner stub: maps the command's first words (after docker's -H) to canned stdout."""
     def runner(cmd, ok=(0,)):
@@ -531,6 +540,17 @@ class TestWorkers(unittest.TestCase):
             write(self.root, "usr/local/php83/sbin/php-fpm", f"ELF\0PHP/{old}\0")
             self.assertIn("does not carry version 8.3.36", self.workers()[2][0], old)
 
+    def test_container_source_build_is_labelled_container(self):
+        # Audit #6: a container's source build was labelled db host: it hid the host's "no PHP build
+        # found" and took the host's trust label. Container root can write that header.
+        box = tempfile.mkdtemp()
+        write(box, "etc/os-release", 'ID=debian\nVERSION_ID="12"\n')
+        write(box, "usr/local/sbin/php-fpm", "ELF\0PHP/8.3.99\0")
+        write(box, "usr/local/include/php/main/php_version.h", '#define PHP_VERSION "8.3.99"\n')
+        fake_proc(self.root, 504, "/usr/local/sbin/php-fpm", proot=box)
+        procs, extra, problems = self.workers()
+        self.assertEqual(([b["db"] for b in extra], [p["pid"] for p in procs], problems), (["container"], ["504"], []))
+
     def test_unreadable_source_binary_is_untraced(self):
         write(self.root, "usr/local/php83/include/php/main/php_version.h", '#define PHP_VERSION "8.3.36"\n')
         write(self.root, "usr/local/php83/sbin/php-fpm", "ELF\0PHP/8.3.36\0")
@@ -949,6 +969,18 @@ class TestLibraries(unittest.TestCase):
         fake_proc(root, 17, "/usr/bin/legacy", maps=["/usr/lib/x86_64-linux-gnu/libcrypto.so.1.1"])
         self.assertTrue(any("owned by libssl1.1:amd64, which no record covers" in p for p in self.report(root)["problems"]))
 
+    def test_packaged_file_in_a_writable_directory_is_untraced(self):
+        # Audit #5: with a packaged directory writable by others, a user could swap the file between the
+        # cached owner check and a later process (false fixed, exit 0). The evidence rule now applies.
+        from stillmapped.resolve import exit_code
+        root = self.host()
+        fake_proc(root, 20, "/usr/bin/app", maps=[LIB])
+        os.chmod(os.path.join(root, os.path.dirname(LIB).lstrip("/")), 0o777)
+        r = self.report(root)
+        self.assertEqual([x for x in r["results"] if x.get("mapping")], [])
+        self.assertTrue(any("pid 20" in p for p in r["problems"]), r["problems"])
+        self.assertEqual(exit_code(r), 2)
+
     def test_cryptopp_owned_by_its_package_is_skipped(self):
         # ISSUES.md: Crypto++ matched libcrypto*.so* and gave "owned by libcrypto++8, which no record covers"
         # (exit 2). Skipped only when the package database says a Crypto++ package owns the file.
@@ -1096,6 +1128,146 @@ class TestHostileFiles(unittest.TestCase):
         inv = self.box_scan(prep)
         self.assertTrue(any("pid 31" in p and "owned by libcrypto++8:amd64, which no record covers" in p
                             for p in inv["problems"]), inv["problems"])
+
+    def test_container_packages_changed_mid_scan_is_a_problem(self):
+        # Audit #10: a container's dpkg status was read once; a downgrade during the scan kept the cached
+        # (fixed) version for its processes. It is re-read at the end, as the host's is.
+        real, boxes = c._same_code, []
+        def same(*a):
+            write(boxes[0], "var/lib/dpkg/status", dpkg_status(("libssl3", "3.0.14-1~deb12u1", OK)))
+            return real(*a)
+        with patch.object(c, "_same_code", same):
+            inv = self.box_scan(boxes.append)
+        self.assertIn("container packages changed during the scan; run it again", inv["problems"])
+        self.assertNotIn("container packages changed during the scan; run it again", self.box_scan(lambda box: None)["problems"])
+
+    def test_namespace_move_during_the_scan_is_not_judged(self):
+        # Audit #3: namespaces were read once; a process that moved into its own namespaces after that read
+        # (and bind-mounted old code at a packaged path) was judged by the host's cached verdict.
+        real, calls = os.readlink, []
+        def readlink(p, *a, **k):
+            if str(p).startswith("ns/"):
+                calls.append(p)
+                if len(calls) > 2:  # the second read, after the maps: the process has moved
+                    return {"ns/user": "user:[4026532777]", "ns/mnt": "mnt:[4026532778]"}[p]
+            return real(p, *a, **k)
+        with patch.object(c.os, "readlink", readlink):
+            inv = self.box_scan(lambda box: None)
+        self.assertEqual(inv["mappings"], [])
+        self.assertTrue(any("pid 30" in p and "not fully checked" in p for p in inv["problems"]), inv["problems"])
+
+    def test_a_process_that_moved_leaves_no_cache_entry(self):
+        # Review 4a: a process rejected at the final re-check had already cached its owner verdict, which a
+        # later process with the same key inherited. Its entries are committed only if it passes.
+        real, owner, calls = os.readlink, c._owner, []
+        def readlink(p, *a, **k):
+            if str(p).startswith("ns/"):
+                calls.append("ns")
+                if p == "ns/mnt" and calls.count("ns") == 4:  # the final re-check of pid 30: it has moved
+                    return "mnt:[4026532778]"
+            return real(p, *a, **k)
+        def counting_owner(*a):
+            calls.append("owner")
+            return owner(*a)
+        def prep(box):  # pid 31 shares pid 30's root and mount namespace: the same cache key
+            fake_proc(self.root, 31, "/usr/bin/openssl", maps=[LIB + " (deleted)"], proot=box, mntns="mnt:[4026532030]")
+        with patch.object(c.os, "readlink", readlink), patch.object(c, "_owner", counting_owner):
+            inv = self.box_scan(prep)
+        self.assertEqual(calls.count("owner"), 2)  # pid 30 moved: pid 31 looks its owner up again
+        self.assertEqual([m["pid"] for m in inv["mappings"]], ["31"])  # nothing of pid 30 is kept
+
+    def test_container_recheck_survives_its_first_pid(self):
+        # Review 3a: the re-check followed /proc/<first pid>/root; that pid exiting skipped it.
+        import shutil
+        real, boxes = c._same_code, []
+        def same(*a):
+            boxes.append("call")
+            if boxes.count("call") == 2:  # pid 31, after pid 30 was judged and committed
+                write(boxes[0], "var/lib/dpkg/status", dpkg_status(("libssl3", "3.0.14-1~deb12u1", OK)))
+                shutil.rmtree(os.path.join(self.root, "proc/30"), ignore_errors=True)  # the first pid is gone
+            return real(*a)
+        def prep(box):  # pid 31: same container, same mount namespace
+            boxes.append(box)
+            fake_proc(self.root, 31, "/usr/bin/openssl", maps=[LIB + " (deleted)"], proot=box, mntns="mnt:[4026532030]")
+        with patch.object(c, "_same_code", same):
+            inv = self.box_scan(prep)
+        self.assertIn("container packages changed during the scan; run it again", inv["problems"])
+
+    def test_container_with_no_process_left_to_read_is_a_problem(self):
+        # Review 3: with no checked process left on its root (or only one in another view), the re-check
+        # was skipped silently.
+        import shutil
+        real, calls = c._same_code, []
+        def same(*a):
+            calls.append(1)
+            if len(calls) == 2:  # host pid 40, after pid 30 was judged and committed: pid 30 is gone
+                shutil.rmtree(os.path.join(self.root, "proc/30"), ignore_errors=True)
+            return real(*a)
+        with patch.object(c, "_same_code", same):
+            inv = self.box_scan(lambda box: fake_proc(self.root, 40, "/usr/bin/openssl", maps=[LIB]))
+        self.assertIn("a container's packages could not be read again at the end of the scan; run it again", inv["problems"])
+
+    def test_container_reread_ignores_a_process_in_another_view(self):
+        # Review 4: only a process in the mount namespace recorded for the root may stand in for it.
+        import shutil
+        real, calls, boxes = c._same_code, [], []
+        def same(*a):
+            calls.append(1)
+            if len(calls) == 2:  # pid 31 (another mount view of the same root) runs; pid 30 is gone
+                shutil.rmtree(os.path.join(self.root, "proc/30"), ignore_errors=True)
+            return real(*a)
+        def prep(box):
+            fake_proc(self.root, 31, "/usr/bin/openssl", maps=[LIB + " (deleted)"], proot=box, mntns="mnt:[4026539999]")
+        with patch.object(c, "_same_code", same):
+            inv = self.box_scan(prep)
+        self.assertIn("a container's packages could not be read again at the end of the scan; run it again", inv["problems"])
+
+    def test_process_that_became_a_zombie_is_gone_not_a_problem(self):
+        # Review 4b: a zombie has no mount namespace; the namespace re-check made it "not fully checked".
+        real = c._same_code
+        def same(*a):
+            d = os.path.join(self.root, "proc/30")
+            write(self.root, "proc/30/stat", f"30 (openssl) Z {'0 ' * 18}4242 0\n")
+            os.remove(os.path.join(d, "ns/mnt"))
+            os.makedirs(os.path.join(d, "task/30"), exist_ok=True)
+            return real(*a)
+        with patch.object(c, "_same_code", same):
+            inv = self.box_scan(lambda box: None)
+        self.assertEqual([p for p in inv["problems"] if "pid 30" in p], [])
+
+    def test_running_out_of_fds_is_never_a_silent_skip(self):
+        # Review NEW-1: EMFILE on /proc/PID (or on its first read) skipped the process silently, like a
+        # process that had exited; every later process went unchecked and the scan could exit 0.
+        import errno
+        real_open, real_read = c.os.open, c._read
+        def emfile_open(p, *a, **k):
+            if str(p).endswith("/proc/30"):
+                raise OSError(errno.EMFILE, "Too many open files")
+            return real_open(p, *a, **k)
+        with patch.object(c.os, "open", emfile_open), self.assertRaises(OSError):
+            self.box_scan(lambda box: None)
+        def emfile_read(d, name):
+            if name == "stat":
+                raise OSError(errno.EMFILE, "Too many open files")
+            return real_read(d, name)
+        with patch.object(c, "_read", emfile_read):
+            inv = self.box_scan(lambda box: None)
+        self.assertTrue(any("pid 30" in p and "not fully checked" in p for p in inv["problems"]), inv["problems"])
+
+    def test_unreadable_exe_link_is_not_a_gone_process(self):
+        # Review 3, A: a non-root user can make exe unreadable (ENAMETOOLONG, a path over PATH_MAX); that was
+        # taken for a zombie and the process was skipped silently, its mappings unchecked.
+        import errno
+        real = c.os.readlink
+        def readlink(p, *a, **k):
+            if p == "exe":
+                raise OSError(errno.ENAMETOOLONG, "File name too long")
+            return real(p, *a, **k)
+        def prep(box):
+            os.makedirs(os.path.join(self.root, "proc/30/task/30"), exist_ok=True)
+        with patch.object(c.os, "readlink", readlink):
+            inv = self.box_scan(prep)
+        self.assertTrue(any("pid 30" in p and "not fully checked" in p for p in inv["problems"]), inv["problems"])
 
     def test_installed_file_replaced_by_fifo_does_not_block(self):
         def prep(box):
@@ -1391,8 +1563,15 @@ class TestReview2(unittest.TestCase):
         with open(os.path.join(d, "map_files/7f000000-7f001000"), "wb") as fh:
             fh.write(b"vulnerable bytes")
         r, code = self.scan(host)
-        self.assertEqual([x["status"] for x in r["results"] if x.get("mapping")], ["restart-needed"])
-        self.assertEqual(code, 1)
+        # Audit #5: the packaged path is a symlink, so the evidence rule stops it before the identity
+        # check (untraced, exit 2; it was restart-needed, exit 1). Never fixed either way.
+        self.assertEqual([x["status"] for x in r["results"] if x.get("mapping")], [])
+        self.assertTrue(any("pid 100" in p for p in r["problems"]), r["problems"])
+        self.assertEqual(code, 2)
+        # Review: the identity check itself (it must resolve inside the container) stays covered.
+        with patch.object(c, "_root_owned", return_value=True):
+            r, code = self.scan(host)
+        self.assertEqual(([x["status"] for x in r["results"] if x.get("mapping")], code), (["restart-needed"], 1))
 
     def test_symlink_swapped_in_after_resolving_is_refused(self):
         box = tempfile.mkdtemp()
@@ -1438,7 +1617,7 @@ def as_root(owned_by_user=(), writable=()):
         def f(p, *a, **k):
             st = real(p, *a, **k)
             mode = (st.st_mode & ~0o7777) | (0o777 if str(p).endswith(writable or "\0") else 0o755)
-            uid = 1000 if str(p).endswith(owned_by_user or "\0") else 0
+            uid = c.ROOT_UID + 1 if str(p).endswith(owned_by_user or "\0") else c.ROOT_UID
             return os.stat_result((mode, st.st_ino, st.st_dev, st.st_nlink, uid) + tuple(st)[5:])
         return f
     return patch.multiple(c.os, lstat=fake(real_lstat), stat=fake(real_stat))
@@ -1461,6 +1640,17 @@ class TestEvidenceRule(unittest.TestCase):
         os.symlink("inc2", os.path.join(root, "opt/app/include"))
         with as_root():
             self.assertFalse(c._root_owned(root, h))  # reached through a symlink
+
+    def test_missing_tail_is_judged_by_its_directories_only(self):
+        # Audit #5 fix: a file gone since it was mapped is judged by the directories on its way;
+        # review 1a: a missing directory (or a root gone with its process) is an error, not a pass.
+        root = tempfile.mkdtemp()
+        write(root, "usr/lib/x.so", "x")
+        self.assertTrue(c._root_owned(root, "/usr/lib/gone.so"))
+        with self.assertRaises(FileNotFoundError):
+            c._root_owned(root, "/usr/gone/x.so")
+        os.chmod(os.path.join(root, "usr/lib"), 0o777)
+        self.assertFalse(c._root_owned(root, "/usr/lib/gone.so"))
 
     def test_running_homebrew_php_is_untraced(self):
         # #3: a Cellar directory's name was the version; any binary under Cellar/php/8.3.36 read

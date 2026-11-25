@@ -202,8 +202,12 @@ def ubuntu(snap, index, cve, module, out):
             pkg = names[0]
         # The package query does not return every USN, so each USN the CVE
         # record names is read by id.
-        related = [json.loads(snap.get(f"https://api.osv.dev/v1/vulns/{u}") or b"{}") for r in recs
-                   for u in r.get("related", []) if re.fullmatch(r"USN-\d+-\d+", u)]
+        raw = [snap.get(f"https://api.osv.dev/v1/vulns/{u}") for r in recs
+               for u in r.get("related", []) if re.fullmatch(r"USN-\d+-\d+", u)]
+        if None in raw:  # audit #7: without that USN the highest fix is unknown
+            out.skip(cve, "ubuntu", stream, src, "a USN the CVE record names is missing (404)")
+            continue
+        related = [json.loads(x) for x in raw]
         usns = {v["id"]: [x for e in _entries(v, eco, src) for x in _fixed(e)]
                 for v in related if {cve, f"UBUNTU-{cve}"} & set(v.get("upstream", [])) and _entries(v, eco, src)}
         # Owner's rule: the highest of the versions the CVE record and its USNs

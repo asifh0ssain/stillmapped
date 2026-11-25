@@ -405,6 +405,15 @@ class TestUbuntu(unittest.TestCase):
         (r,) = out.records[(self.CVE, "php")].values()
         self.assertEqual((r["fixed"], r["evidence_url"][-7:]), ("8.3.6-0ubuntu0.24.04.10", "USN-1-2"))
 
+    def test_missing_related_usn_is_a_skip(self):
+        # Audit #7, 404 variant: without the re-fix USN-1-2 the highest fix is unknown; no too-low record.
+        rec = osv(f"UBUNTU-{self.CVE}", self.ECO, "php8.3", "8.3.6-0ubuntu0.24.04.9", related=["USN-1-1", "USN-1-2"])
+        usn = osv("USN-1-1", self.ECO, "php8.3", "8.3.6-0ubuntu0.24.04.9", upstream=[self.CVE])
+        out = build.Out("2026-10-30")
+        feeds.ubuntu(FakeSnap({"https://api.osv.dev/v1/vulns/USN-1-1": json.dumps(usn).encode()}), {"24.04": [rec]}, self.CVE, "php", out)
+        self.assertFalse(out.records)
+        self.assertTrue(any("USN the CVE record names is missing" in sk[4] for sk in out.skips))
+
     def test_no_usn_no_record(self):
         out = self.run_one({})
         self.assertFalse(out.records)
@@ -479,6 +488,23 @@ class TestSnapshot(unittest.TestCase):
                 fh.write(b"changed")
             with self.assertRaises(ValueError):
                 off.get("https://example.invalid/x")
+
+    def test_feed_outage_stops_the_run(self):
+        # Audit #7: a 503 on a re-fix USN was stored as "no data" and the build used the older USN's fix.
+        import urllib.error
+        with tempfile.TemporaryDirectory() as d:
+            snap = Snapshot(d, online=True)
+            with patch("urllib.request.urlopen") as u:
+                u.side_effect = urllib.error.HTTPError("https://example.invalid/usn", 503, "busy", {}, None)
+                with self.assertRaises(OSError):
+                    snap.get("https://example.invalid/usn")
+                u.side_effect = urllib.error.HTTPError("https://example.invalid/gone", 404, "no", {}, None)
+                self.assertIsNone(snap.get("https://example.invalid/gone"))
+            snap.save()
+            off = Snapshot(d)  # the stored 503 fails an offline build too
+            with self.assertRaises(OSError):
+                off.get("https://example.invalid/usn")
+            self.assertIsNone(off.get("https://example.invalid/gone"))
 
 
 SNAPS = sorted(glob.glob(os.path.join(os.path.dirname(os.path.dirname(__file__)), "snapshots", "*", "manifest.json")))

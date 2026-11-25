@@ -19,8 +19,10 @@ def _safe(s):
 
 def _advice(path):
     """What to restart for a PHP process on old code, by the file it maps (owner, 2026-11-04)."""
-    if _PHP_MODULE.search(path):
-        return "restart the web server"  # Apache, or another server with libphp loaded
+    if _PHP_MODULE.search(path):  # Apache, uWSGI's PHP plugin or an embed program: not always the web server
+        return "restart the program that loaded PHP (the web server, uWSGI or an embedding program)"
+    if re.search(r"/(php-cgi|lsphp)[\d.]*( \(deleted\))?$", path):  # spawned and respawned by the server
+        return "restart the web server, LiteSpeed or the service that starts it"
     if re.search(r"/php-fpm[\d.]*( \(deleted\))?$", path):
         return "restart php-fpm"  # the master or a pool process
     return "restart this process (or the supervisor that runs it)"  # CLI, queue worker, daemon

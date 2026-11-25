@@ -124,6 +124,7 @@ class TestTrust(unittest.TestCase):
                             ({**base, "source": "dpkg", "db": "container"}, "container-pkgdb"),
                             ({**base, "source": "docker"}, "image-metadata"),
                             ({**base, "source": "directadmin"}, "root-owned-source"),
+                            ({**base, "source": "source", "db": "container"}, "container-source"),
                             ({**base, "source": "source"}, "root-owned-source")):
             with self.subTest(source=build["source"], db=build["db"]):
                 self.assertEqual(resolve_one(build, CVE, RECORDS)["trust"], want)

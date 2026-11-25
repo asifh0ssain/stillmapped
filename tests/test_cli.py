@@ -51,16 +51,16 @@ class TestRestartReceipt(unittest.TestCase):
         self.assertEqual(self.receipt(("200", "apache2", "/usr/lib/apache2/modules/libphp8.2.so (deleted)"),
                                       ("300", "httpd-prefork", "/usr/lib64/apache2/mod_php8.so (deleted)"),
                                       ("71", "uwsgi-core", "/usr/lib/apache2/modules/libphp8.3.so (deleted)"))[1:], [
-            "  - pid 200 apache2, /usr/lib/apache2/modules/libphp8.2.so (deleted): restart the web server",
-            "  - pid 300 httpd-prefork, /usr/lib64/apache2/mod_php8.so (deleted): restart the web server",
-            "  - pid 71 uwsgi-core, /usr/lib/apache2/modules/libphp8.3.so (deleted): restart the web server"])
+            "  - pid 200 apache2, /usr/lib/apache2/modules/libphp8.2.so (deleted): restart the program that loaded PHP (the web server, uWSGI or an embedding program)",
+            "  - pid 300 httpd-prefork, /usr/lib64/apache2/mod_php8.so (deleted): restart the program that loaded PHP (the web server, uWSGI or an embedding program)",
+            "  - pid 71 uwsgi-core, /usr/lib/apache2/modules/libphp8.3.so (deleted): restart the program that loaded PHP (the web server, uWSGI or an embedding program)"])
 
     def test_cli_queue_worker_or_daemon_restarts_the_process(self):
         self.assertEqual(self.receipt(("6828", "php", "/usr/bin/php8.2 (deleted)"),
                                       ("401", "php-cgi8.2", "/usr/bin/php-cgi8.2 (deleted)"),
                                       ("402", "php", "/usr/bin/php8.2"))[1:], [
             "  - pid 6828 php, /usr/bin/php8.2 (deleted): restart this process (or the supervisor that runs it)",
-            "  - pid 401 php-cgi8.2, /usr/bin/php-cgi8.2 (deleted): restart this process (or the supervisor that runs it)",
+            "  - pid 401 php-cgi8.2, /usr/bin/php-cgi8.2 (deleted): restart the web server, LiteSpeed or the service that starts it",
             "  - pid 402 php, /usr/bin/php8.2: restart this process (or the supervisor that runs it)"])
 
     def test_advice_follows_the_mapped_file_not_the_name(self):

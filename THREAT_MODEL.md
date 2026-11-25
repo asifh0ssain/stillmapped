@@ -36,7 +36,7 @@ authenticity: a package or image built by an attacker, installed by root,
 carries whatever version it claims. That is root acting (out of scope), and
 it is covered by package signature checks and image signing, not by this
 tool. Every result names its evidence in a `trust` field: `host-pkgdb`,
-`container-pkgdb`, `image-metadata` or `root-owned-source`.
+`container-pkgdb`, `container-source`, `image-metadata` or `root-owned-source`.
 
 ## Inputs and how they are treated
 

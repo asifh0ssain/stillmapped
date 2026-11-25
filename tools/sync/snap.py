@@ -39,15 +39,19 @@ class Snapshot:
         self.date = self.manifest["created"][:10]
 
     def get(self, url, body=None):
-        """The response bytes, or None when the feed did not answer 200."""
+        """The response bytes, or None when the feed answered 404. Any other
+        status (a 5xx, 429 or 403 outage) stops the run: stored as "no data", a
+        missing re-fix USN gave a fixed record with too low a version (audit #7)."""
         key = url if body is None else f"{url} {body}"
         e = self.manifest["entries"].get(key)
         if e is None:
             if not self.online:
                 raise KeyError(f"not in the snapshot: {key}")
             e = self.manifest["entries"][key] = self._fetch(key, url, body)
-        if e["status"] != 200:
+        if e["status"] == 404:
             return None
+        if e["status"] != 200:
+            raise OSError(f"feed answered {e['status']}, not 200 or 404: {key}")
         with open(os.path.join(self.path, e["file"]), "rb") as fh:
             data = fh.read()
         if hashlib.sha256(data).hexdigest() != e["sha256"]:

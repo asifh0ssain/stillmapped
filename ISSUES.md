@@ -97,15 +97,34 @@ record. Fix idea: a load-time guard in `load_records` that rejects only such
 a disagreeing pair, with a named test; a pair that agrees, or whose records
 cover different builds, stays valid.
 
-## php-cgi and lsphp: advise "restart the web server" (post-launch)
+## Mounts a user controls (FUSE allow_other, udisks): not yet proven
 
-Owner, 2026-11-04 (v0.1.7 report). The text receipt advises "restart this
-process (or the supervisor that runs it)" for a stale php-cgi or lsphp
-process, as for any process that is neither php-fpm nor a server with libphp
-loaded. The web server (or LiteSpeed) usually spawns and respawns them, so
-"restart the web server" is the better advice. Output text only: no verdict
-or exit code changes. Fix idea: match php-cgi and lsphp in `_advice`
-(`stillmapped/cli.py`), with a named test. Post-launch.
+Audit #1. The evidence rule trusts `st_uid` and the mode bits, and does not
+check which filesystem a path is on. A sandbox run showed that a PHP prefix
+whose files report uid 0 reads `fixed` (exit 0). On a real kernel this needs a
+non-root user to mount a filesystem that reports uid 0 where the scanner reads
+it: FUSE with `user_allow_other` enabled (off by default), or a udisks loop
+mount from an active desktop session (allowed by default polkit rules). Not
+yet tested on a real kernel. Fix idea: fail closed when a component's device
+differs from its root's and the mount is FUSE or a udisks mount
+(`/proc/self/mountinfo`). Audits #2 and #3 are closed in code (0.1.9) but are
+also still to be confirmed on a real kernel.
+
+## A covered package's file that fails the evidence rule names the wrong reason
+
+Review of 0.1.9, 2a. A record-covered package file in a writable directory is
+reported "owned by libssl3:amd64, which no record covers": the result (exit 2)
+is right, the reason is not. Text only; left out to stay in the line budget.
+
+## /proc paths read by path, not through the pinned fd (low)
+
+Review of 0.1.9, round 4. The gone-process check lists `/proc/PID/task`, and
+the end-of-scan container re-read uses `/proc/PID/root` and `ns/*`, by path.
+After pid reuse in that window the scanner looks at another process. Every
+outcome found is a skip of a process that really is gone or an extra problem
+(exit 2); hiding a container's own mid-scan package change would need a fork
+race and a pivoted root faking its old status. Hardening: open `/proc/PID`
+once and read through `dir_fd`, re-checking the start time after the read.
 
 ## Ideas
 

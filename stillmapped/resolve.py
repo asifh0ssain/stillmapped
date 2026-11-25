@@ -121,8 +121,9 @@ def _candidates(build, cve, records):
 def trust(build):
     """The evidence a verdict rests on (Codex finding 1). Package databases and image metadata
     are trusted as installed; stillmapped does not verify package or image authenticity."""
-    return ("container-pkgdb" if build["db"] == "container" else "host-pkgdb" if build["source"] in ("dpkg", "rpm")
-            else "image-metadata" if build["source"] == "docker" else "root-owned-source")
+    pkg = build["source"] in ("dpkg", "rpm")
+    return ("container-pkgdb" if build["db"] == "container" and pkg else "container-source" if build["db"] == "container"
+            else "host-pkgdb" if pkg else "image-metadata" if build["source"] == "docker" else "root-owned-source")
 
 
 def resolve_one(build, cve, records):

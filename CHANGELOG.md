@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.1.9 (2026-11-24)
+
+Fixes for the remaining audit leads that a sandbox validation confirmed, and for
+what two reviews of those fixes found. The scanner budget is raised to 890
+logic lines (owner, 2026-11-24).
+
+- Audit #5 (false `fixed`, exit 0, when root has made a packaged directory
+  writable by others): the evidence rule now applies to dpkg- and rpm-owned
+  files too, not only to source builds. A packaged file in a writable or
+  user-owned directory, or reached through a symlink, is untraced (exit 2).
+  A file gone since it was mapped is judged by the directories on its way; a
+  missing directory is an error, never a pass (review).
+- Audit #3 (a process that moves into its own namespaces after they were
+  read): the final per-process re-check now re-reads `ns/user` and `ns/mnt`
+  with the start time; a change makes the process "not fully checked". Each
+  process now works on copies of the scan's caches, which are kept only if it
+  passes that re-check, so a process that moved or exited can't leave an owner
+  verdict for later processes (review). A process that became a zombie during
+  the scan counts as gone.
+- Audit #10 (a container's dpkg database read once): each container's
+  database is read again at the end, through a process this scan checked on
+  that root and still in the namespaces it recorded (not a decoy mount view),
+  and a change is a problem, "container packages changed during the scan"
+  (exit 2), as on the host. With no such process left, that is a problem too.
+- Only a process that is gone (ENOENT, ESRCH) is skipped silently. Any other
+  error opening or reading `/proc/PID`, for example running out of file
+  descriptors, stops the scan (exit 3) instead of skipping every later process
+  (review); a permission error (`hidepid`) counts the process as unreadable.
+  A process is taken for gone only on such an error and a dead or zombie kernel
+  state, never because its `exe` link can't be read: a non-root user could make
+  it unreadable (a path over PATH_MAX) and have the process skipped silently
+  (review; the skip predates 0.1.9).
+- Audit #6: a source build found inside a container is labelled
+  `db: container`, with the new trust value `container-source`. It no longer
+  hides the host's "no PHP build found" or takes the host's label.
+- Audit #7 (generator): a feed status other than 200 or 404 (a 5xx, 429 or 403
+  outage) stops `tools/sync fetch` and any offline build of that snapshot,
+  instead of reading as "no data"; a USN that a CVE record names but that is
+  missing (404) makes the record a skip. Either way a missing re-fix can no
+  longer give a fixed record with too low a version. The bundled data is
+  unchanged: snapshot `20261124T193258Z` rebuilds byte for byte.
+- Restart advice (text only): a process with libphp loaded is told to restart
+  the program that loaded PHP (the web server, uWSGI or an embedding program);
+  php-cgi and lsphp, the web server, LiteSpeed or the service that starts it.
+- `tools/sync/refresh.sh`: the report's added, changed and removed totals
+  count records (they counted distros).
+- Tests: the evidence rule's owner is `ROOT_UID` (0); tests set their own uid
+  and umask 022 so fixtures are judged the same way as root, under any umask.
+  Named tests for each fix, each checked to fail without it.
+
 ## 0.1.8 (2026-11-24)
 
 Two scanner fixes and a data refresh.
