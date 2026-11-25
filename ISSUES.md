@@ -103,17 +103,12 @@ Audit #1 follow-up (0.1.10). FUSE mounts and mounts under `/media` or
 `/run/media` are not evidence. A udisks mount an admin moved elsewhere
 (`x-udisks` fstab entries, a custom mount path) is not recognised, and a
 process gone before its `mountinfo` is read is judged without it (it is then
-dropped as gone). Review of 0.1.10 found three more, not fixed:
-- A copy of a udisks mount made by shared propagation (an admin bind of `/`
-  or `/media` elsewhere) and fstab `user`/`users` mounts outside `/media` are
-  not recognised.
-- Mount points are read before and after the lstats, so a FUSE server that
-  detaches its mount during the check is still seen; a mount made and
-  detached inside that window (microseconds, with no signal to time it) is
-  not.
-Fix idea: take each component's mount ID from an `O_PATH` fd's
-`/proc/self/fdinfo` and judge that mount in `mountinfo` (fail closed if it is
-missing); read udisks' own record of its mounts (`/run/udisks2/mounted-fs`).
+dropped as gone). Review of 0.1.10 also found, not fixed: a copy of a udisks
+mount made by shared propagation (an admin bind of `/` or `/media`
+elsewhere) and fstab `user`/`users` mounts outside `/media` are not
+recognised. Fix idea: read udisks' own record of its mounts
+(`/run/udisks2/mounted-fs`). The race the same review found (a mount made or
+detached during the check) is closed in 0.1.11.
 
 ## A covered package's file that fails the evidence rule names the wrong reason
 

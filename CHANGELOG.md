@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.1.11 (2026-11-25)
+
+Hardening of the audit #1 rule, from the review of 0.1.10. Each component
+of an evidence path is now opened (`O_PATH`) and judged by its own mount
+ID, read from that fd's `/proc/self/fdinfo`, against the process's own
+`mountinfo`: a FUSE or `/media` mount, or a mount the table does not list
+(detached during the check), is not evidence, and the component's lstat must
+see the same file as the fd. A mount made or detached during the check can
+no longer slip between the reads; 0.1.10 read mount points before and after
+and left a window of microseconds. Same results on a real host and the same
+exit 2 for all four real-kernel VM attacks (#1 FUSE, #1 udisks, #2, #3). The
+scanner budget is raised to 916 logic lines (owner, 2026-11-25).
+
 ## 0.1.10 (2026-11-25)
 
 Audit #1, confirmed on a real kernel (Ubuntu 24.04 VM, kernel 6.8): a non-root
